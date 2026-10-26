@@ -1,0 +1,6 @@
+{
+  "appId": "com.billdna.mobile",
+  "appName": "Bill DNA",
+  "webDir": "www",
+  "android": { "allowMixedContent": false }
+}

@@ -1,0 +1,1 @@
+window.BILLDNA_LIBS='lib/';window.BILLDNA_SW=false;window.BILLDNA_APK=true;window.BILLDNA_LICENSE_URL='https://cuycienyhqkanmtijzdv.supabase.co/functions/v1/license';window.BILLDNA_LICENSE_REQUIRED=false;
