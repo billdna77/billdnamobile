@@ -2,5 +2,9 @@
   "appId": "com.billdna.mobile",
   "appName": "Bill DNA",
   "webDir": "www",
-  "android": { "allowMixedContent": false }
+  "android": {
+    "allowMixedContent": false,
+    "adjustMarginsForEdgeToEdge": "force"
+  },
+  "backgroundColor": "#151515"
 }
