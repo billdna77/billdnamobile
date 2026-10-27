@@ -194,3 +194,10 @@ html.m .m-cbar .btn.pri{background:var(--m-acc);border-color:var(--m-acc);color:
 html.m .auth{padding:24px 16px;align-items:flex-start;min-height:100dvh}
 html.m .auth .card{border-radius:22px;padding:22px;margin-top:max(28px,env(safe-area-inset-top,0px))}
 html.m .auth .btn.pri{background:var(--m-acc);border-color:var(--m-acc);color:#fff;min-height:52px;font-size:16px}
+
+/* ---------- bill image sheet ---------- */
+html.m .m-img{background:var(--m-tile);border-radius:16px;padding:10px;margin:4px 0 12px}
+html.m .m-img img{display:block;width:100%;height:auto;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12)}
+html.m .m-imgacts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+html.m .m-imgacts .btn.pri{background:var(--m-acc);border-color:var(--m-acc);color:#fff}
+html.m #modal .mh .btn.pri{background:var(--m-acc);border-color:var(--m-acc);color:#fff;margin-left:auto;margin-right:8px}
