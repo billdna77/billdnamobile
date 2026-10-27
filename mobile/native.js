@@ -90,6 +90,8 @@ if (window.BILLDNA_APK && window.Capacitor && window.Capacitor.isNativePlatform 
   };
   var _waShare = A.waShare;
   A.waShare = function (d) { var C = cur(), x = docById(C, d.id), p = x && partyById(C, x.partyId); if (p && !phoneOk(p) && !/walk-in/i.test(p.name)) { askPhone(p, function () { _waShare(d); }); return; } _waShare(d); };
+  var _ledWa = A.ledgerWa;
+  if (_ledWa) A.ledgerWa = function (d) { var C = cur(), p = partyById(C, d.id); if (p && !phoneOk(p)) { askPhone(p, function () { A.ledger(d); _ledWa(d); }); return; } _ledWa(d); };
   var _waPay = A.waPay;
   if (_waPay) A.waPay = function (d) { var C = cur(), x = C.d.payments.find(function (q) { return q.id === d.id; }), p = x && partyById(C, x.partyId); if (p && !phoneOk(p)) { askPhone(p, function () { _waPay(d); }); return; } _waPay(d); };
   /* text-only WhatsApp links (payment reminders) open the chat in the app */

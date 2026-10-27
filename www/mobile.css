@@ -256,3 +256,22 @@ html.m .v-daybook .main>.card>.bar>.row input{max-width:none!important;grid-colu
 html.m .v-daybook .main>.card>.bar>.row .btn{min-height:40px;font-size:13px;padding:0 6px;white-space:normal;line-height:1.15}
 html.m .v-daybook .main>.card>.bar>.row .btn[data-act=dlDayBook]{grid-column:span 1}
 html.m .m-psum{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+/* ---------- search pickers for customers / suppliers / products ---------- */
+html.m select[data-mpick]{pointer-events:none;background-image:none}
+html.m label:has(> select[data-mpick]),html.m td:has(> select[data-mpick]){cursor:pointer}
+html.m #mpick{position:fixed;inset:0;z-index:300;background:var(--bg)}
+html.m .m-pk{display:flex;flex-direction:column;height:100%;padding:0 12px}
+html.m .m-pkh{display:flex;align-items:center;gap:6px;min-height:58px;padding-top:env(safe-area-inset-top,0px)}
+html.m .m-pkh b{font-size:18px}
+html.m .m-pk .m-search{position:static}
+html.m .m-pkl{flex:1 1 auto;overflow-y:auto;margin-top:10px;padding-bottom:24px;display:flex;flex-direction:column}
+html.m .m-prow{all:unset;box-sizing:border-box;display:flex;flex-direction:column;gap:2px;padding:13px 6px;border-bottom:1px solid var(--line);cursor:pointer}
+html.m .m-prow b{font-size:15.5px;font-weight:500}
+html.m .m-prow em{font-style:normal;font-size:12.5px;color:var(--mute)}
+html.m .m-prow.on b{color:var(--m-acc)}
+html.m .m-prow:active{background:var(--soft)}
+html.m .m-prow.add{color:var(--m-acc);font-weight:600;border-bottom:0;padding-top:16px}
+html.m.pk .m-nav,html.m.pk .m-cbar{display:none}
+html.m .drafting .main{padding-bottom:calc(var(--m-nav) + 104px + env(safe-area-inset-bottom,0px))}
+html.m .drafting .main>.top{display:none}

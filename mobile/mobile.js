@@ -177,6 +177,19 @@ if (MOB) (function () {
     return '<div class="m-cbar" id="mcbar"><div><b class="num">' + money(d.total) + '</b><span>' + qtyF(n) + ' item(s) · ' + esc(s.mode) + '</span></div>' +
       '<button type="button" class="btn line" data-act="mToBill">Review</button><button type="button" class="btn pri" data-act="qbSave">Save bill</button></div>';
   }
+  /* bill editor: total and Save always visible at the bottom */
+  function edBar() {
+    var C = cur(), d = S.draft; if (!d || !DT[d.type]) return '';
+    calc(C, d); var t = DT[d.type], bal = null;
+    if (d.pay && typeof payPlan === 'function') bal = payPlan(C, d).bal;
+    return '<div class="m-cbar" id="medbar"><div><b class="num">' + (t.items ? money(d.total || 0) : esc(t.label)) + '</b><span>' + (t.items ? (d.items || []).length + ' line(s)' + (bal !== null && bal !== d.total ? ' · balance ' + money(Math.max(0, bal)) : '') : 'Draft') + '</span></div>' +
+      '<button type="button" class="btn line" data-act="cancelDraft">Cancel</button><button type="button" class="btn pri" data-act="saveDoc">Save</button></div>';
+  }
+  function edBarRefresh() { var b = $('#medbar'); if (b) b.outerHTML = edBar(); }
+  var _refreshTotals = refreshTotals;
+  refreshTotals = function () { _refreshTotals(); edBarRefresh(); };
+  document.addEventListener('input', function (e) { if (S.draft && e.target && e.target.dataset && (e.target.dataset.pf || e.target.dataset.f)) setTimeout(edBarRefresh, 0); });
+  document.addEventListener('change', function (e) { if (S.draft && e.target && e.target.dataset && (e.target.dataset.pf || e.target.dataset.f)) setTimeout(edBarRefresh, 0); });
   var _qbRefresh = qbRefresh;
   qbRefresh = function () { _qbRefresh(); var b = $('#mcbar'); if (b) b.outerHTML = qbBar(); };
 
@@ -208,7 +221,7 @@ if (MOB) (function () {
       (canView('parties') ? navBtn('mOpen', { v: 'parties', t: S.tab.parties || 'customer' }, 'Parties', 'users', v === 'parties') : '') +
       navBtn('mMenu', {}, 'Menu', 'all', !home && !bills && v !== 'parties' && v !== 'quick') + '</nav>';
     var body = v === 'menu' ? menuH() : v === 'daybook' ? dayBookView() : V[v]();
-    return '<div class="shell m-shell v-' + esc(v) + '">' + bar + '<main class="main">' + (bills ? billSeg(v) : '') + body + '</main>' + (v === 'quick' ? qbBar() : '') + nav + '</div>';
+    return '<div class="shell m-shell v-' + esc(v) + (S.draft ? ' drafting' : '') + '">' + bar + '<main class="main">' + (bills && !S.draft ? billSeg(v) : '') + body + '</main>' + (v === 'quick' ? qbBar() : '') + (S.draft ? edBar() : '') + nav + '</div>';
   };
   function dayBookView() { var C = cur(); var h = dayBookH(C); return h || '<div class="empty">Day Book is not available for your role.</div>'; }
   /* simple back history across screens; bottom-bar taps start fresh */
@@ -351,6 +364,82 @@ if (MOB) (function () {
   };
 
   setInterval(function () { var c = document.querySelector('.m-clock'); if (c) c.textContent = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }, 20000);
+  /* Search pickers: every customer/supplier/product dropdown (and any long list) opens a full-height sheet with a search box */
+  function pickKind(sel) {
+    var C = cur(); if (!C) return '';
+    var vals = Array.prototype.slice.call(sel.options).map(function (o) { return o.value; }).filter(Boolean);
+    if (!vals.length) return '';
+    if (vals.every(function (v) { return !!partyById(C, v); })) return 'party';
+    if (vals.every(function (v) { return !!prodById(C, v); })) return 'prod';
+    return sel.options.length >= 10 ? 'list' : '';
+  }
+  function markPickers() {
+    document.querySelectorAll('select:not([data-mpick])').forEach(function (sel) {
+      if (sel.multiple || sel.disabled) return; var k = pickKind(sel); if (!k) return;
+      sel.setAttribute('data-mpick', k);
+    });
+  }
+  var PK = { sel: null };
+  function pickLabel(sel) { var l = sel.closest('label'); var sp = l && l.querySelector('span'); return (sp && sp.textContent) || sel.getAttribute('aria-label') || 'Choose'; }
+  function pickRows(sel, q) {
+    var C = cur(), k = sel.getAttribute('data-mpick'), out = [], ql = q.trim().toLowerCase(), words = ql.split(/\s+/).filter(Boolean);
+    Array.prototype.slice.call(sel.options).forEach(function (o) {
+      if (!o.value && (k === 'party' || k === 'prod') && !/walk-in/i.test(o.text)) return;
+      var sub = '', hay = o.text;
+      if (k === 'party' && o.value) { var p = partyById(C, o.value); if (p) { var b = partyBalance(C, p); sub = [p.phone, p.gstin, b ? (b > 0 ? (p.type === 'supplier' ? 'to pay ' : 'due ') + money(b) : 'advance ' + money(-b)) : ''].filter(Boolean).join(' · '); hay += ' ' + (p.phone || '') + ' ' + (p.gstin || '') + ' ' + (p.state || ''); } }
+      if (k === 'prod' && o.value) { var pr = prodById(C, o.value); if (pr) { sub = [money(pr.sale) + (pr.unit ? '/' + pr.unit : ''), pr.tracked ? qtyF(stockQty(C, pr.id)) + ' in stock' : 'service', pr.hsn ? 'HSN ' + pr.hsn : ''].filter(Boolean).join(' · '); hay += ' ' + (pr.sku || '') + ' ' + (pr.barcode || '') + ' ' + (pr.hsn || '') + ' ' + (pr.cat || ''); } }
+      hay = hay.toLowerCase();
+      if (words.length && !words.every(function (w) { return hay.indexOf(w) >= 0; })) return;
+      out.push({ v: o.value, t: o.text, sub: sub, on: o.value === sel.value, starts: ql && o.text.toLowerCase().indexOf(ql) === 0 });
+    });
+    if (ql) out.sort(function (a, b) { return (b.starts ? 1 : 0) - (a.starts ? 1 : 0); });
+    return out;
+  }
+  function pickListH() {
+    var sel = PK.sel, q = ($('#mpq') || {}).value || '', rows = pickRows(sel, q), k = sel.getAttribute('data-mpick');
+    var h = rows.slice(0, 150).map(function (r) { return '<button type="button" class="m-prow' + (r.on ? ' on' : '') + '" data-v="' + esc(r.v) + '"><b>' + esc(r.t) + '</b>' + (r.sub ? '<em>' + esc(r.sub) + '</em>' : '') + '</button>'; }).join('');
+    if (rows.length > 150) h += '<div class="note" style="padding:10px">Showing 150 of ' + rows.length + '. Type more to narrow.</div>';
+    if (!rows.length) h += '<div class="empty">No match for "' + esc(q) + '".</div>';
+    if (k === 'party' && canWrite('parties')) { var side = sel.closest('[data-side]') ? sel.closest('[data-side]').getAttribute('data-side') : ''; h += '<button type="button" class="m-prow add" data-add="party">+ Add new ' + (/supplier/i.test(pickLabel(sel)) ? 'supplier' : 'customer') + (q ? ' "' + esc(q) + '"' : '') + '</button>'; }
+    if (k === 'prod' && canWrite('inventory')) h += '<button type="button" class="m-prow add" data-add="prod">+ Add new item' + (q ? ' "' + esc(q) + '"' : '') + '</button>';
+    return h;
+  }
+  function openPick(sel) {
+    PK.sel = sel; var ov = $('#mpick');
+    if (!ov) { ov = document.createElement('div'); ov.id = 'mpick'; document.body.appendChild(ov); }
+    ov.innerHTML = '<div class="m-pk"><div class="m-pkh"><button type="button" class="m-ib" data-pk="close" aria-label="Close">' + ic('back') + '</button><b>' + esc(pickLabel(sel)) + '</b></div>' +
+      '<div class="m-search">' + ic('search') + '<input id="mpq" type="search" autocomplete="off" placeholder="Type name, phone, GSTIN, code…"></div><div class="m-pkl" id="mpl">' + pickListH() + '</div></div>';
+    ov.hidden = false; document.documentElement.classList.add('pk');
+    setTimeout(function () { var i = $('#mpq'); if (i && sel.options.length > 12) i.focus(); }, 120);
+  }
+  function closePick() { var ov = $('#mpick'); if (ov) { ov.hidden = true; ov.innerHTML = ''; } document.documentElement.classList.remove('pk'); PK.sel = null; }
+  function choose(v) {
+    var sel = PK.sel; closePick(); if (!sel) return;
+    sel.value = v; sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  document.addEventListener('click', function (e) {
+    var ov = $('#mpick');
+    if (ov && !ov.hidden && ov.contains(e.target)) {
+      var b = e.target.closest('[data-v],[data-pk],[data-add]'); if (!b) return; e.preventDefault(); e.stopPropagation();
+      if (b.dataset.pk === 'close') { closePick(); return; }
+      if (b.dataset.add) {
+        var q = ($('#mpq') || {}).value || '', sel = PK.sel, isSup = /supplier/i.test(pickLabel(sel)); closePick();
+        if (b.dataset.add === 'party') { A.newParty({ side: isSup ? 'supplier' : 'customer' }); setTimeout(function () { var n = document.querySelector('#modal form [name=name]'); if (n && q) n.value = q; }, 50); }
+        else if (A.edNewItem && S.draft) { A.edNewItem(); setTimeout(function () { var n = document.querySelector('#modal form [name=name]'); if (n && q) n.value = q; }, 50); }
+        else if (A.qbNewItem) A.qbNewItem({ name: q });
+        return;
+      }
+      choose(b.dataset.v); return;
+    }
+    var host = e.target.closest && e.target.closest('label, td, .fld, .row'); if (!host) return;
+    var sels = host.querySelectorAll('select[data-mpick]'); if (!sels.length) return;
+    for (var i = 0; i < sels.length; i++) { var r = sels[i].getBoundingClientRect(); if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) { e.preventDefault(); e.stopPropagation(); openPick(sels[i]); return; } }
+  }, true);
+  document.addEventListener('input', function (e) { if (e.target && e.target.id === 'mpq') { var l = $('#mpl'); if (l) l.innerHTML = pickListH(); } });
+  document.addEventListener('keydown', function (e) { if (e.target && e.target.id === 'mpq' && e.key === 'Enter') { e.preventDefault(); var f = document.querySelector('#mpl .m-prow[data-v]:not([data-v=""])'); if (f) choose(f.dataset.v); } });
+  new MutationObserver(function () { markPickers(); }).observe(document.body, { childList: true, subtree: true });
+  window.__bdPick = { open: openPick, close: closePick };
+
   /* Parties: totals on top and a reminders shortcut */
   var _vParties = V.parties;
   V.parties = function () {
@@ -366,6 +455,7 @@ if (MOB) (function () {
   try {
     var CapApp = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
     if (CapApp && CapApp.addListener) CapApp.addListener('backButton', function () {
+      var pk = $('#mpick'); if (pk && !pk.hidden) { pk.hidden = true; pk.innerHTML = ''; document.documentElement.classList.remove('pk'); return; }
       if (!$('#modal').hidden) { closeModal(); return; }
       if (DB && DB.session && cur()) {
         if (S.draft) { S.draft = null; render(); return; }

@@ -72,9 +72,22 @@ if (MOB) (function () {
     tx('TOTAL', tl, y + 50, font(600, 26), '#fff'); tx(rsM(d.total), cAmt - 20, y + 51, font(600, 32, true), ACC, 'right');
     y += 76 + 44;
     if (d.type === 'invoice' || d.type === 'pinvoice') {
-      var o = d.cancelled ? 0 : outstanding(C, d), paid = d.total - o;
+      var o = d.cancelled ? 0 : outstanding(C, d), live = C.d.payments.filter(function (q) { return !q.cancelled; });
+      var adv = live.reduce(function (s2, q) { return s2 + (q.alloc && q.alloc[d.id] ? q.alloc[d.id] : 0); }, 0);
+      var dsc = live.filter(function (q) { return q.refId === d.id; }).reduce(function (s2, q) { return s2 + (q.disc || 0); }, 0);
+      var cr = C.d.docs.filter(function (x) { return x.refId === d.id && !x.cancelled && (x.type === 'creditnote' || x.type === 'preturn'); }).reduce(function (s2, x) { return s2 + x.total; }, 0);
+      var paid = d.total - o - adv - dsc - cr;
+      if (adv) { tx('Advance adjusted', tl, y, font(400, 24), MUTE); tx(rsM(adv), cAmt, y, font(400, 24, true), INK, 'right'); y += 40; }
+      if (dsc) { tx(d.type === 'pinvoice' ? 'Discount received' : 'Discount allowed', tl, y, font(400, 24), MUTE); tx(rsM(dsc), cAmt, y, font(400, 24, true), INK, 'right'); y += 40; }
+      if (cr) { tx('Returned', tl, y, font(400, 24), MUTE); tx(rsM(cr), cAmt, y, font(400, 24, true), INK, 'right'); y += 40; }
       tx('Paid', tl, y, font(400, 24), MUTE); tx(rsM(paid), cAmt, y, font(400, 24, true), INK, 'right'); y += 40;
       tx(o > 0 ? 'Balance due' : 'Fully paid', tl, y, font(600, 24), o > 0 ? ACC : INK); tx(rsM(o), cAmt, y, font(600, 24, true), o > 0 ? ACC : INK, 'right'); y += 40;
+      var pp = partyById(C, d.partyId);
+      if (d.type === 'invoice' && pp && !/walk-in/i.test(pp.name)) {
+        var all = partyBalance(C, pp), prev = all - Math.max(0, o);
+        if (prev > 0 && all > 0) { tx('Previous balance', tl, y, font(400, 24), MUTE); tx(rsM(prev), cAmt, y, font(400, 24, true), INK, 'right'); y += 40; rect(tl - 24, y - 26, cAmt - tl + 24, 2, LINE); y += 10; tx('Total due', tl, y, font(600, 26), ACC); tx(rsM(all), cAmt, y, font(600, 26, true), ACC, 'right'); y += 44; }
+        else if (all < 0) { tx('Advance with us', tl, y, font(400, 24), MUTE); tx(rsM(-all), cAmt, y, font(400, 24, true), INK, 'right'); y += 40; }
+      }
     }
     ctx.font = font(400, 22);
     wrap(ctx, amtWords(d.total), W - 2 * PAD).forEach(function (l) { y += 8; tx(l, PAD, y + 22, font(400, 22), MUTE); y += 30; });

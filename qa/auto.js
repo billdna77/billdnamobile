@@ -1,0 +1,40 @@
+// receipt "oldest bills first" and safe advance defaults
+const { boot } = require('./harness');
+const R = []; const ok = (n, c, i) => { R.push(!!c); if (!c) console.log('  FAIL ' + n, i === undefined ? '' : JSON.stringify(i).slice(0, 300)); };
+const today = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+(async () => {
+  const H = await boot(null); const close = () => { const c = H.$('#modal [data-act=closeModal]'); if (c) c.click(); };
+  const _act = H.act; H.act = (a, x) => { try { _act(a, x); } catch (e) { const m = /^\[data-([a-z0-9-]+)=["']?([^"'\]]*)["']?\]$/i.exec(x || ''); const el = H.w.document.createElement('button'); el.setAttribute('data-act', a); if (m) el.setAttribute('data-' + m[1], m[2]); H.w.document.body.appendChild(el); el.click(); el.remove(); } };
+  const D = () => H.co().d;
+  H.submit('form[data-submit=signup]', { name: 'O', email: 'o@a.in', pass: 'secret1' }); close();
+  H.submit('form[data-submit=createCompany]', { name: 'Auto Co', gstin: '33AAAPS1234Q1ZL', state: 'Tamil Nadu', sample: false, biz: 'retail', scheme: 'regular', mode: 'full' }); close();
+  H.act('nav', '[data-v=inventory]'); H.act('newProd'); H.submit('form[data-submit=saveProd]', { name: 'Board', cat: '', hsn: '3920', unit: 'pcs', gst: '0', sale: '1000', cost: '500', min: '0', open: '0', tracked: false }); close();
+  H.act('nav', '[data-v=parties]'); H.act('newParty', '[data-side=customer]'); H.submit('form[data-submit=saveParty]', { name: 'Kumar', type: 'customer', state: 'Tamil Nadu', gstin: '', phone: '9876543210', email: '', address: '', opening: '0' }); close();
+  const pid = D().products[0].id, cust = D().parties.find(p => p.name === 'Kumar').id;
+  const inv = () => { H.act('nav', '[data-v=sales]'); H.act('tab', '[data-t=invoice]'); H.act('newDoc', '[data-t=invoice]'); H.set('select[data-f=partyId]', cust, 'change'); H.set('select[data-f=pid][data-i="0"]', pid, 'change'); H.act('saveDoc'); close(); return D().docs.filter(d => d.type === 'invoice').pop(); };
+  const a = inv(), b = inv();
+  H.act('newPay', '[data-type=receipt]'); H.set('#modal select[name=party]', cust, 'change');
+  ok('auto option default with 2 unpaid', H.$('#modal select[name=ref]').value === '__auto', H.$('#modal select[name=ref]').value);
+  H.submit('#modal form[data-submit=savePay]', { party: cust, ref: '__auto', amt: '1500', disc: '0', mode: 'Cash', date: today, note: '' }); close();
+  const st = x => { H.act('view', '[data-id="' + x.id + '"]'); const t = H.$('#modal').textContent; close(); return /Paid/.test(t) ? 'Paid' : /Partial/.test(t) ? 'Partial' : 'Unpaid'; };
+  ok('oldest bill paid first', st(a) === 'Paid' && st(b) === 'Partial', [st(a), st(b)]);
+  H.act('nav', '[data-v=sales]'); H.act('newDoc', '[data-t=invoice]'); H.set('select[data-f=partyId]', cust, 'change');
+  await new Promise(r => setTimeout(r, 30));
+  ok('no advance offered (none left)', !H.$('[data-pf=adv]')); H.act('cancelDraft');
+  H.act('newPay', '[data-type=receipt]'); H.set('#modal select[name=party]', cust, 'change');
+  ok('single unpaid bill preselected', H.$('#modal select[name=ref]').value === b.id);
+  H.submit('#modal form[data-submit=savePay]', { party: cust, ref: '', amt: '2000', disc: '0', mode: 'Cash', date: today, note: '' }); close();
+  H.act('nav', '[data-v=sales]'); H.act('newDoc', '[data-t=invoice]'); H.set('select[data-f=partyId]', cust, 'change');
+  await new Promise(r => setTimeout(r, 30));
+    ok('advance offered but not ticked while older bill unpaid', !!H.$('[data-pf=adv]') && !H.$('[data-pf=adv]').checked && /older unpaid/.test(H.$('#paybox').textContent));
+  H.act('cancelDraft');
+  // opening dues: a payment that only clears old dues is not offered as advance
+  H.act('nav', '[data-v=parties]'); H.act('tab', '[data-t=customer]'); H.act('newParty', '[data-side=customer]'); H.submit('form[data-submit=saveParty]', { name: 'Old Dues', type: 'customer', state: 'Tamil Nadu', gstin: '', phone: '9876500011', email: '', address: '', opening: '3000' }); close();
+  const od = D().parties.find(p => p.name === 'Old Dues').id;
+  H.act('newPay', '[data-type=receipt]'); H.submit('#modal form[data-submit=savePay]', { party: od, ref: '', amt: '3000', disc: '0', mode: 'Cash', date: today, note: '' }); close();
+  H.act('nav', '[data-v=sales]'); H.act('newDoc', '[data-t=invoice]'); H.set('select[data-f=partyId]', od, 'change'); await new Promise(r => setTimeout(r, 30));
+  ok('payment of opening dues is not treated as advance', !H.$('[data-pf=adv]'));
+  H.act('cancelDraft');
+  ok('no runtime errors', H.errors.length === 0, H.errors);
+  const bad = R.filter(x => !x).length; console.log('auto: ' + (R.length - bad) + '/' + R.length); process.exit(bad ? 1 : 0);
+})().catch(e => { console.log('ERR', e.stack); process.exit(1); });

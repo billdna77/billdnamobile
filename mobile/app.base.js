@@ -344,7 +344,7 @@ function outMap(C) {
   var pa = C.d.payments, da = C.d.docs;
   if (OUTM.pa !== pa || OUTM.pl !== pa.length || OUTM.da !== da || OUTM.dl !== da.length || OUTM.v !== CACHE_V) {
     var m = {};
-    pa.forEach(function (x) { if (x.refId && !x.cancelled) m[x.refId] = (m[x.refId] || 0) + x.amount + (x.disc || 0); });
+    pa.forEach(function (x) { if (x.refId && !x.cancelled) m[x.refId] = (m[x.refId] || 0) + x.amount + (x.disc || 0); if (x.alloc && !x.cancelled) Object.keys(x.alloc).forEach(function (k) { m[k] = (m[k] || 0) + x.alloc[k]; }); });
     da.forEach(function (x) { if (x.refId && !x.cancelled && (x.type === 'creditnote' || x.type === 'preturn')) m[x.refId] = (m[x.refId] || 0) + x.total; });
     OUTM = { pa: pa, pl: pa.length, da: da, dl: da.length, v: CACHE_V, map: m };
   }
@@ -452,8 +452,37 @@ function cancelDoc(C, id) {
   log('Cancelled ' + DT[d.type].label, d.no);
   return '';
 }
+/* advance / on-account money: payments not tied to a bill can later be adjusted against bills (p.alloc = {docId: paise}) */
+function allocUsed(C, p) { var s = 0; if (p.alloc) Object.keys(p.alloc).forEach(function (k) { var d = docById(C, k); if (d && !d.cancelled) s += p.alloc[k]; }); return s; }
+function advFree(C, p) { return p.cancelled || p.refId ? 0 : Math.max(0, p.amount - allocUsed(C, p)); }
+function advAvail(C, partyId, payType) {
+  var free = sumBy(C.d.payments.filter(function (p) { return p.partyId === partyId && p.type === payType; }), function (p) { return advFree(C, p); });
+  var pa = partyById(C, partyId); if (!pa) return 0;
+  /* money that also covers old dues (opening balance, unlinked bills) is not an advance */
+  return Math.max(0, Math.min(free, -partyBalance(C, pa)));
+}
+function useAdvance(C, d, amt) {
+  var payType = d.type === 'pinvoice' ? 'payment' : 'receipt', want = Math.max(0, Math.min(amt, outstanding(C, d))), left = want;
+  C.d.payments.filter(function (p) { return p.partyId === d.partyId && p.type === payType && advFree(C, p) > 0; }).sort(function (a, b) { return (a.date + a.no).localeCompare(b.date + b.no); }).forEach(function (p) {
+    if (left <= 0) return; var take = Math.min(advFree(C, p), left); if (take <= 0) return;
+    p.alloc = p.alloc || {}; p.alloc[d.id] = (p.alloc[d.id] || 0) + take; left -= take; CACHE_V++;
+    log('Advance ' + money(take) + ' from ' + p.no + ' adjusted', d.no);
+  });
+  return want - left;
+}
+function unpaidDocs(C, partyId, payType) {
+  var types = payType === 'payment' ? ['pinvoice'] : ['invoice', 'debitnote'];
+  return C.d.docs.filter(function (d) { return d.partyId === partyId && types.indexOf(d.type) >= 0 && !d.cancelled && outstanding(C, d) > 0; }).sort(function (a, b) { return (a.date + a.no).localeCompare(b.date + b.no); });
+}
+/* spread an on-account payment over the oldest unpaid bills; anything left stays as advance */
+function allocOldest(C, p) {
+  var left = advFree(C, p);
+  unpaidDocs(C, p.partyId, p.type).forEach(function (d) { if (left <= 0) return; var take = Math.min(left, outstanding(C, d)); if (take <= 0) return; p.alloc = p.alloc || {}; p.alloc[d.id] = (p.alloc[d.id] || 0) + take; left -= take; CACHE_V++; });
+  return left;
+}
 function addPayment(C, o) {
-  if (!(o.amount > 0)) return 'Enter an amount above zero.';
+  o.disc = Math.max(0, o.disc || 0);
+  if (!(o.amount > 0) && !(o.refId && o.disc > 0)) return 'Enter an amount above zero.';
   if (!o.partyId) return 'Select a party.';
   if (o.refId) {
     var inv = docById(C, o.refId);
@@ -467,7 +496,7 @@ function addPayment(C, o) {
   return '';
 }
 function addProduct(C, o) {
-  var p = { id: uid(), name: o.name, cat: o.cat || '', sku: o.sku || '', hsn: o.hsn || '', unit: o.unit || 'pcs', gst: +o.gst || 0, sale: o.sale || 0, cost: o.cost || 0, min: +o.min || 0, tracked: o.tracked !== false, barcode: o.barcode || '', batch: !!o.batch, serial: !!o.serial, wsale: o.wsale || 0, mrp: o.mrp || 0 };
+  var p = { incl: !!o.incl, id: uid(), name: o.name, cat: o.cat || '', sku: o.sku || '', hsn: o.hsn || '', unit: o.unit || 'pcs', gst: +o.gst || 0, sale: o.sale || 0, cost: o.cost || 0, min: +o.min || 0, tracked: o.tracked !== false, barcode: o.barcode || '', batch: !!o.batch, serial: !!o.serial, wsale: o.wsale || 0, mrp: o.mrp || 0 };
   C.d.products.push(p);
   if (p.tracked && +o.openQty > 0) addMove(C, { date: today(), pid: p.id, wh: o.wh || C.d.warehouses[0], qty: +o.openQty, cost: p.cost, type: 'opening', note: 'Opening stock', batch: p.batch ? (o.openBatch || 'OPENING') : '', exp: p.batch ? (o.openExp || '') : '', serials: p.serial ? o.openSerials : undefined });
   return p;
@@ -628,6 +657,7 @@ function editorH() {
     h += '<div class="bar"><div class="row">' + (C.d.products.some(function (x) { return x.barcode; }) ? scanBox('doc') : '') + btn('addRow', 'Add item', {}, 'sm') + (canWrite('inventory') ? btn('edNewItem', 'New item', {}, 'sm line') : '') + '<span class="note" id="supply">' + esc(supplyNote(C, d)) + '</span></div></div>';
     h += '<div class="row" style="align-items:flex-end"><label class="fld" style="max-width:190px"><span>Discount on whole bill</span><select data-f="bdt"><option value="pct"' + (d.bdt === 'amt' ? '' : ' selected') + '>Percent (%)</option><option value="amt"' + (d.bdt === 'amt' ? ' selected' : '') + '>Cash amount (Rs)</option></select></label><label class="fld" style="max-width:150px"><span>Value</span><input class="num" type="number" min="0" step="any" data-f="bdv" value="' + esc(d.bdv || '') + '" placeholder="0"></label><span class="note">Taken off before GST. Leave empty for none.</span></div>';
     h += '<div id="totbox">' + totalsH(C, d) + '</div>';
+    if (!d.id && (d.type === 'invoice' || d.type === 'pinvoice')) h += payBoxH(C, d);
   }
   if (t.side === 's' && t.items) h += shipH(d);
   h += '<label class="fld"><span>Notes and terms</span><textarea data-f="notes">' + esc(d.notes || '') + '</textarea></label>';
@@ -638,6 +668,7 @@ function editorH() {
 function refreshTotals() {
   var C = cur(), d = S.draft; calc(C, d);
   var tb = $('#totbox'); if (tb) tb.innerHTML = totalsH(C, d);
+  var ps = $('#paysum'); if (ps) ps.innerHTML = paySumH(C, d);
   var sp = $('#supply'); if (sp) sp.textContent = supplyNote(C, d);
   d.items.forEach(function (it, i) { var a = $('#amt-' + i); if (a) a.textContent = money(it.taxable || 0); });
 }
@@ -797,7 +828,7 @@ function payList(type) {
   var mod = type === 'receipt' ? 'sales' : 'purchases';
   return table([['No'], ['Date'], [type === 'receipt' ? 'Customer' : 'Supplier'], ['Mode'], ['Against'], ['Amount', 'r'], ['By'], ['Status'], ['']], rows.map(function (p) {
     var inv = p.refId ? docById(C, p.refId) : null;
-    return ['<b>' + esc(p.no) + '</b>', dmy(p.date), esc(partyName(C, p.partyId)), esc(p.mode), inv ? esc(inv.no) : '<span class="mute">On account</span>', money(p.amount), esc(p.by || '-'), statusChip(p.cancelled ? 'Cancelled' : type === 'receipt' ? 'Received' : 'Paid'),
+    return ['<b>' + esc(p.no) + '</b>', dmy(p.date), esc(partyName(C, p.partyId)), esc(p.mode), inv ? esc(inv.no) : '<span class="mute">Advance / on account</span>' + (p.alloc ? '<div class="note">Adjusted: ' + Object.keys(p.alloc).map(function (k) { var x = docById(C, k); return x && !x.cancelled ? esc(x.no) + ' ' + money(p.alloc[k]) : ''; }).filter(Boolean).join(', ') + (advFree(C, p) > 0 ? ' · left ' + money(advFree(C, p)) : '') + '</div>' : ''), money(p.amount), esc(p.by || '-'), statusChip(p.cancelled ? 'Cancelled' : type === 'receipt' ? 'Received' : 'Paid'),
       '<div class="acts">' + btn('viewPay', 'View', { id: p.id }, 'sm line') + (canWrite(mod, type) && canAdmin(mod) && !p.cancelled ? btn('editPay', 'Edit', { id: p.id }, 'sm line') : '') + (canWrite(mod, type) && !p.cancelled ? btn('cancelPay', 'Cancel', { id: p.id }, 'sm warn') : '') + '</div>'];
   }), 'No ' + (type === 'receipt' ? 'receipts' : 'payments') + ' yet.', null, rows.map(function (p) { return ['viewPay', p.id]; })) + lm.note;
 }
@@ -890,15 +921,24 @@ function billText(d) {
   L.push('', '*Total: ' + money(d.total) + '*');
   if (d.type === 'invoice') {
     var bal = outstanding(C, d);
-    if (bal > 0) { L.push('Balance due: ' + money(bal)); if (C.bank && C.bank.upi) L.push('Pay by UPI: ' + C.bank.upi); }
-    else L.push('Paid. Thank you!');
+    if (bal > 0) L.push('Balance due: ' + money(bal)); else L.push('Paid. Thank you!');
+    var tb = totalDueLines(C, d); if (tb) L.push(tb);
+    if ((bal > 0 || tb) && C.bank && C.bank.upi) L.push('Pay by UPI: ' + C.bank.upi);
   } else L.push('Thank you.');
   if (C.phone) L.push(C.phone);
   return L.join('\n');
 }
+/* old dues of the customer beyond this bill, so the message shows the full amount to pay */
+function totalDueLines(C, d) {
+  var p = partyById(C, d.partyId); if (!p || /walk-in/i.test(p.name)) return '';
+  var all = partyBalance(C, p), here = Math.max(0, outstanding(C, d)), prev = all - here;
+  if (prev > 0 && all > 0) return 'Previous balance: ' + money(prev) + '\n*Total due: ' + money(all) + '*';
+  if (all < 0) return 'Advance with us: ' + money(-all);
+  return '';
+}
 function waShortText(d) {
   var C = cur(), t = DT[d.type], L = [C.name + ' - ' + t.label + ' ' + d.no, 'Amount: ' + money(d.total)];
-  if (d.type === 'invoice') { var bal = outstanding(C, d); L.push(bal > 0 ? 'Balance due: ' + money(bal) : 'Paid. Thank you!'); if (bal > 0 && C.bank && C.bank.upi) L.push('Pay by UPI: ' + C.bank.upi); }
+  if (d.type === 'invoice') { var bal = outstanding(C, d), tb = totalDueLines(C, d); L.push(bal > 0 ? 'Balance due: ' + money(bal) : 'Paid. Thank you!'); if (tb) L.push(tb); if ((bal > 0 || tb) && C.bank && C.bank.upi) L.push('Pay by UPI: ' + C.bank.upi); }
   return L.join('\n');
 }
 /* invoice copies: Original / Duplicate / Triplicate, names can be changed in Settings */
@@ -1003,13 +1043,18 @@ function qbTotH(C) {
   var s = qbState(), d = qbCalc(C);
   var h = '<div class="tot" style="width:100%;margin:0">' + (d.discAmt > 0 ? '<div><span>Discount (already deducted)</span><span class="num">-' + money(d.discAmt) + '</span></div>' : '') + '<div><span>Taxable value</span><span class="num">' + money(d.sub) + '</span></div>';
   if (C.scheme === 'regular') h += '<div><span>GST added</span><span class="num">' + money(d.cgst + d.sgst + d.igst) + '</span></div>';
-  return h + '<div class="g"><span>Total</span><span class="num">' + money(d.total) + '</span></div></div>';
+  h += '<div class="g"><span>Total</span><span class="num">' + money(d.total) + '</span></div>';
+  var q = qbPlan(C);
+  if (q.adv) h += '<div><span>Advance adjusted</span><span class="num">-' + money(q.adv) + '</span></div>';
+  if (q.settle) h += '<div><span>Settlement discount</span><span class="num">-' + money(q.settle) + '</span></div>';
+  if (q.adv || q.settle) h += '<div class="g"><span>To collect now</span><span class="num">' + money(q.due) + '</span></div>';
+  return h + '</div>';
 }
 function qbRefresh() {
   var C = cur(), s = qbState(), d = qbCalc(C), tb = $('#qbtot');
   if (tb) tb.innerHTML = qbTotH(C);
   s.cart.forEach(function (it, i) { var a = $('#qba-' + i); if (a) a.textContent = money(it.taxable || 0); });
-  var pi = $('#qbpaid'); if (pi && s.paid === null) pi.value = rs(d.total);
+  var pi = $('#qbpaid'); if (pi && s.paid === null) pi.value = rs(qbPlan(C).due);
 }
 function vQuick() {
   var C = cur(), s = qbState(), custs = C.d.parties.filter(function (p) { return p.type === 'customer' && p.name !== 'Walk-in Customer'; });
@@ -1018,13 +1063,14 @@ function vQuick() {
   h += '<div class="cols"><div class="card" style="flex:1 1 380px"><div class="sugwrap"><input id="qbq" class="inp" placeholder="Search ' + C.d.products.length + ' items or scan a barcode" value="' + esc(s.q) + '" aria-label="Search items" autocomplete="off">' + (camBtn('qb') ? '<div style="margin-top:6px">' + camBtn('qb') + '</div>' : '') + '<div id="qbsug" class="sug"' + (s.q.trim() ? '' : ' hidden') + '>' + qbSugH(C) + '</div></div>' +
     '<div class="chips" id="qbchips">' + qbChips(C) + '</div><div id="tiles" class="tiles">' + qbTiles(C) + '</div>' +
     (canWrite('inventory') ? '<div class="row">' + btn('qbNewItem', '+ New item', { name: '' }, 'sm') + '<span class="note">New items are saved in your item list and show in reports.</span></div>' : '') +
-    (C.scheme === 'regular' ? '<div class="note">Prices are before GST. GST is added in the total.</div>' : '') + '</div>';
+    (C.scheme === 'regular' ? '<div class="note">Prices are before GST and GST is added, except items marked \'Sale price includes GST\'.</div>' : '') + '</div>';
   h += '<div class="card" style="flex:1 1 380px"><h2>Bill</h2><div id="cart">' + qbCartH(C) + '</div>' +
     '<label class="fld"><span>Customer</span><select data-chg="qbParty"><option value="">Walk-in customer</option>' + opts(custs, s.partyId, function (p) { return p.id; }, function (p) { return p.name; }) + '</select></label>' +
     (canWrite('parties') ? '<div>' + btn('newParty', 'New customer', { side: 'customer' }, 'sm line') + '</div>' : '') +
     '<div class="row" style="align-items:flex-end"><label class="fld" style="max-width:150px"><span>Discount</span><select data-qbf="bdt"><option value="pct"' + (s.bdt === 'amt' ? '' : ' selected') + '>Percent (%)</option><option value="amt"' + (s.bdt === 'amt' ? ' selected' : '') + '>Cash (Rs)</option></select></label><label class="fld" style="max-width:120px"><span>Value</span><input class="num" type="number" min="0" step="any" data-qbf="bdv" value="' + esc(s.bdv || '') + '" placeholder="0"></label></div>' +
+    (function () { var av = s.partyId ? advAvail(C, s.partyId, 'receipt') : 0; return av > 0 ? '<label class="ck" style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-qbf="adv"' + (s.adv ? ' checked' : '') + '> Adjust advance received <b class="num">' + money(av) + '</b></label>' : ''; })() +
     '<div id="qbtot">' + qbTotH(C) + '</div>' +
-    '<div class="fg">' + field('Payment mode', '<select data-chg="qbMode">' + opts(['Cash', 'UPI', 'Card', 'Bank'], s.mode) + '</select>') + field('Amount received', '<input id="qbpaid" class="num" type="number" min="0" step="any" data-qbf="paid" aria-label="Amount received" value="' + (s.paid === null ? rs(d.total) : esc(s.paid)) + '">') + '</div>' +
+    '<div class="fg">' + field('Payment mode', '<select data-chg="qbMode">' + opts(['Cash', 'UPI', 'Card', 'Bank'], s.mode) + '</select>') + field('Amount received', '<input id="qbpaid" class="num" type="number" min="0" step="any" inputmode="decimal" data-qbf="paid" aria-label="Amount received" value="' + (s.paid === null ? rs(qbPlan(C).due) : esc(s.paid)) + '">') + field('Settlement discount (Rs)', '<input class="num" type="number" min="0" step="any" inputmode="decimal" data-qbf="settle" value="' + esc(s.settle || '') + '" placeholder="0" aria-label="Settlement discount">') + '</div>' +
     '<div class="note">Received less than the total? The rest stays as balance due. Pick a customer for part payment.</div>' +
     '<div class="row">' + btn('qbSave', 'Save bill', {}, 'pri') + '</div></div></div>';
   return h;
@@ -1135,7 +1181,7 @@ function vAccounting() {
     h += table([['Date'], ['Debit'], ['Credit'], ['Amount', 'r'], ['Narration'], ['']], C.d.journals.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).map(function (j) { return [dmy(j.date), esc(j.dr), esc(j.cr), money(j.amount), esc(j.note), w && canAdmin('accounting') ? btn('delJrn', 'Delete', { id: j.id }, 'sm warn') : '']; }), 'No journal entries yet.', ['Total debit = total credit', '', '', money(jt), '', '']);
   } else {
     var isR = tab === 'recv', type = isR ? 'invoice' : 'pinvoice', t = today();
-    var inv = C.d.docs.filter(function (d) { return d.type === type && !d.cancelled && outstanding(C, d) > 0; }).sort(function (a, b) { return (a.due || '').localeCompare(b.due || ''); });
+    var inv = C.d.docs.filter(function (d) { return (d.type === type || (isR && d.type === 'debitnote')) && !d.cancelled && outstanding(C, d) > 0; }).sort(function (a, b) { return (a.due || '').localeCompare(b.due || ''); });
     var tot = sumBy(inv, function (d) { return outstanding(C, d); });
     if (isR && remList(C).length && canWrite('sales', 'invoice')) h += '<div class="row" style="margin:8px 0">' + btn('remindUi', 'Payment reminders (' + remList(C).length + ' customers overdue)', {}, 'pri') + '</div>';
     h += table([['Invoice'], [isR ? 'Customer' : 'Supplier'], ['Due'], ['Total', 'r'], ['Balance', 'r'], ['Age']], inv.map(function (d) {
@@ -1193,7 +1239,7 @@ function ledgerH(p) {
     return [e.date === '0000-00-00' ? '' : dmy(e.date), esc(e.t), dr ? money(dr) : '', cr ? money(cr) : '', money(bal)];
   });
   return '<div class="mh"><div><h2>' + esc(p.name) + '</h2><div class="note">' + esc(p.gstin || 'No GSTIN') + ' · ' + esc(p.state) + ' · ' + esc(p.phone || 'No phone') + (p.email ? ' · ' + esc(p.email) : '') + '</div></div>' + btn('closeModal', 'Close', {}, 'sm line') + '</div>' +
-    '<div class="grid">' + kpi(cu ? 'Receivable' : 'Payable', money(partyBalance(C, p)), cu ? 'Customer owes you' : 'You owe supplier') + '</div><div class="row">' + (partyBalance(C, p) > 0 && canWrite(cu ? 'sales' : 'purchases', cu ? 'receipt' : 'payment') ? btn('newPay', cu ? 'Receive payment' : 'Pay supplier', { type: cu ? 'receipt' : 'payment', party: p.id }, 'pri') : '') + expBtns('modal') + '</div>' + table([['Date'], ['Entry'], ['Debit', 'r'], ['Credit', 'r'], ['Balance', 'r']], rows, 'No entries yet.', null, ev.map(function (e) { return e.act ? [e.act, e.id] : null; }));
+    '<div class="grid">' + kpi(cu ? 'Receivable' : 'Payable', money(partyBalance(C, p)), cu ? 'Customer owes you' : 'You owe supplier') + '</div><div class="row">' + (partyBalance(C, p) > 0 && canWrite(cu ? 'sales' : 'purchases', cu ? 'receipt' : 'payment') ? btn('newPay', cu ? 'Receive payment' : 'Pay supplier', { type: cu ? 'receipt' : 'payment', party: p.id }, 'pri') : '') + btn('ledgerWa', 'Statement on WhatsApp', { id: p.id }, 'line') + expBtns('modal') + '</div>' + table([['Date'], ['Entry'], ['Debit', 'r'], ['Credit', 'r'], ['Balance', 'r']], rows, 'No entries yet.', null, ev.map(function (e) { return e.act ? [e.act, e.id] : null; }));
 }
 
 /* ---------- settings ---------- */
@@ -1743,7 +1789,7 @@ function editBlock(C, x) {
   return '';
 }
 function editPostedCheck(C, d, old) {
-  var paid = sumBy(C.d.payments.filter(function (p) { return p.refId === d.id && !p.cancelled; }), function (p) { return p.amount; });
+  var paid = sumBy(C.d.payments.filter(function (p) { return p.refId === d.id && !p.cancelled; }), function (p) { return p.amount + (p.disc || 0); }) + sumBy(C.d.payments.filter(function (p) { return p.alloc && p.alloc[d.id] && !p.cancelled; }), function (p) { return p.alloc[d.id]; });
   if ((d.type === 'invoice' || d.type === 'pinvoice') && d.total < paid) return 'The new total is less than ' + money(paid) + ' already recorded. Edit or cancel the payment first.';
   var s = SE[d.type]; if (!s || skipStock(C, d)) return '';
   var wh = d.wh || C.d.warehouses[0], ow = old.wh || C.d.warehouses[0], need = {}, was = {};
@@ -4923,10 +4969,13 @@ function bindRemind(A) {
 /* ---------- party-wise prices, wholesale level, MRP, ship-to and transport ---------- */
 function rateFor(C, p, partyId, side) {
   if (side === 'p') return p.cost;
-  var pa = partyId ? partyById(C, partyId) : null;
-  if (pa && pa.prices && pa.prices[p.id] > 0) return pa.prices[p.id];
-  if (pa && pa.level === 'wholesale' && p.wsale > 0) return p.wsale;
-  return p.sale;
+  var pa = partyId ? partyById(C, partyId) : null, r;
+  if (pa && pa.prices && pa.prices[p.id] > 0) r = pa.prices[p.id];
+  else if (pa && pa.level === 'wholesale' && p.wsale > 0) r = p.wsale;
+  else r = p.sale;
+  /* price typed with GST included: bill the value before GST so the customer pays the printed price */
+  if (p.incl && C.scheme === 'regular' && +p.gst > 0) r = Math.round(r * 100 / (100 + +p.gst));
+  return r;
 }
 function discFor(C, partyId, side) { var pa = partyId ? partyById(C, partyId) : null; return side === 'p' || !pa ? 0 : (+pa.disc || 0); }
 function mrpTag(it) { return +it.mrp > +it.rate ? ' (MRP ' + rs(it.mrp) + ')' : ''; }
@@ -5807,6 +5856,84 @@ function bindBackup(A) {
   A.abToggle = function () { if (!ownerOnly()) return; var ab = abState(); ab.on = ab.on === false; save(); toast(ab.on ? 'Daily backup is on.' : 'Daily backup is off.'); render(); };
 }
 
+/* ---------- payment at billing: received now, advance adjustment, settlement discount ---------- */
+function payState(C, d) {
+  if (!d.pay) {
+    var pt = d.type === 'pinvoice' ? 'payment' : 'receipt', av = d.partyId ? advAvail(C, d.partyId, pt) : 0;
+    d.pay = { amt: '', mode: 'Cash', disc: '', adv: av > 0 && !unpaidDocs(C, d.partyId, pt).length, party: d.partyId };
+  }
+  if (d.pay.party !== d.partyId) { var pt2 = d.type === 'pinvoice' ? 'payment' : 'receipt'; d.pay.party = d.partyId; d.pay.adv = !!d.partyId && advAvail(C, d.partyId, pt2) > 0 && !unpaidDocs(C, d.partyId, pt2).length; }
+  return d.pay;
+}
+function payPlan(C, d) {
+  var ps = payState(C, d), pt = d.type === 'pinvoice' ? 'payment' : 'receipt', av = d.partyId ? advAvail(C, d.partyId, pt) : 0;
+  var adv = ps.adv ? Math.min(av, d.total || 0) : 0, disc = P(ps.disc), amt = P(ps.amt);
+  return { av: av, adv: adv, disc: disc, amt: amt, mode: ps.mode, bal: (d.total || 0) - adv - disc - amt };
+}
+function paySumH(C, d) {
+  var pl = payPlan(C, d), pur = d.type === 'pinvoice';
+  var h = '<div class="tot" style="margin:0;width:100%"><div><span>Bill total</span><span class="num">' + money(d.total || 0) + '</span></div>';
+  if (pl.adv) h += '<div><span>Advance adjusted</span><span class="num">-' + money(pl.adv) + '</span></div>';
+  if (pl.disc) h += '<div><span>' + (pur ? 'Discount received' : 'Settlement discount') + '</span><span class="num">-' + money(pl.disc) + '</span></div>';
+  if (pl.amt) h += '<div><span>' + (pur ? 'Paid now' : 'Received now') + '</span><span class="num">-' + money(pl.amt) + '</span></div>';
+  h += '<div class="g"><span>' + (pl.bal < 0 ? 'More than the bill' : 'Balance due') + '</span><span class="num' + (pl.bal < 0 ? ' warn-t' : '') + '">' + money(Math.abs(pl.bal)) + '</span></div></div>';
+  return h;
+}
+function payBoxH(C, d) {
+  var ps = payState(C, d), pl = payPlan(C, d), pur = d.type === 'pinvoice';
+  var h = '<div class="card paybox" id="paybox" style="background:var(--bg)"><h2>' + (pur ? 'Payment to supplier' : 'Payment') + '</h2>';
+  if (pl.av > 0) { var ub = unpaidDocs(C, d.partyId, pur ? 'payment' : 'receipt'); h += '<label class="ck" style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-pf="adv"' + (ps.adv ? ' checked' : '') + '> Adjust ' + (pur ? 'advance paid' : 'advance received') + ' <b class="num">' + money(pl.av) + '</b></label>' + (ub.length ? '<div class="note warn-t">This party also has ' + ub.length + ' older unpaid bill(s). Tick only if this advance is for this bill.</div>' : ''); }
+  h += '<div class="fg">' + field(pur ? 'Paid now (Rs)' : 'Received now (Rs)', '<input class="num" type="number" min="0" step="any" inputmode="decimal" data-pf="amt" value="' + esc(ps.amt) + '" placeholder="0 = credit bill">') +
+    field('Payment mode', '<select data-pf="mode">' + opts(['Cash', 'UPI', 'Card', 'Bank'], ps.mode) + '</select>') +
+    field(pur ? 'Discount received at payment (Rs)' : 'Settlement discount (Rs)', '<input class="num" type="number" min="0" step="any" inputmode="decimal" data-pf="disc" value="' + esc(ps.disc) + '" placeholder="0">') + '</div>';
+  h += '<div class="row">' + btn('payFull', pur ? 'Paid in full' : 'Received in full', {}, 'sm line') + '</div>';
+  h += '<div class="note">' + (pur ? 'Discount received is the amount the supplier reduced when you paid. ' : 'Settlement discount is the amount you reduce when the customer pays (for example round figure). ') + 'GST on the bill does not change.</div>';
+  return h + '<div id="paysum">' + paySumH(C, d) + '</div></div>';
+}
+function payCheck(C, d) {
+  var pl = payPlan(C, d);
+  if (pl.amt < 0 || pl.disc < 0) return 'Amounts cannot be negative.';
+  if (pl.bal < 0) return 'Received amount, discount and advance together are more than the bill total. Reduce them.';
+  if ((pl.amt > 0 || pl.disc > 0) && !d.partyId) return 'Select the party first.';
+  return '';
+}
+function paySettle(C, d, pl) {
+  var pt = d.type === 'pinvoice' ? 'payment' : 'receipt', msg = [];
+  if (pl.adv > 0) { var used = useAdvance(C, d, pl.adv); if (used) msg.push('advance ' + money(used) + ' adjusted'); }
+  if (pl.amt > 0 || pl.disc > 0) { var e = addPayment(C, { type: pt, date: d.date || today(), partyId: d.partyId, amount: pl.amt, disc: pl.disc, mode: pl.mode, refId: d.id, note: pl.disc ? 'Settlement at billing' : '' }); if (e) toast(e, true); else msg.push((pt === 'receipt' ? 'received ' : 'paid ') + money(pl.amt) + (pl.disc ? ', discount ' + money(pl.disc) : '')); }
+  return msg.join(', ');
+}
+function bindPay(A) {
+  A.ledgerWa = function (d) {
+    var C = cur(), p = partyById(C, d.id); if (!p) return;
+    if (!$('#modal table')) A.ledger(d);
+    var m = modelFor('modal'), b = partyBalance(C, p);
+    m.title = 'Statement ' + p.name;
+    toast('Preparing statement...');
+    pdfModel(m).then(function (buf) {
+      var txt = C.name + ' - account statement for ' + p.name + '. ' + (b > 0 ? 'Balance due: ' + money(b) + '.' : b < 0 ? 'Advance with us: ' + money(-b) + '.' : 'No balance due. Thank you!');
+      return shareFile(fname('Statement ' + p.name, 'pdf'), buf, txt, waPhone(p));
+    }, function () { toast('Could not prepare the statement.', true); });
+  }; A.payFull = function () { var C = cur(), d = S.draft; if (!d) return; calc(C, d); var ps = payState(C, d), pl = payPlan(C, d); ps.amt = rs(Math.max(0, (d.total || 0) - pl.adv - pl.disc)); var i = $('[data-pf=amt]'); if (i) i.value = ps.amt; var sm = $('#paysum'); if (sm) sm.innerHTML = paySumH(C, d); }; }
+function payInput(t) {
+  var k = t.dataset.pf, d = S.draft; if (!k || !d) return false;
+  var ps = payState(cur(), d); ps[k] = t.type === 'checkbox' ? t.checked : t.value;
+  var sm = $('#paysum'); if (sm) sm.innerHTML = paySumH(cur(), d); return true;
+}
+document.addEventListener('input', function (e) { if (e.target && e.target.dataset && e.target.dataset.pf) payInput(e.target); });
+document.addEventListener('change', function (e) {
+  var t = e.target; if (!t || !t.dataset) return;
+  if (t.dataset.pf) { payInput(t); return; }
+  if (t.dataset.f === 'partyId' && S.draft) setTimeout(function () { var pb = $('#paybox'), d = S.draft; if (pb && d) { calc(cur(), d); pb.outerHTML = payBoxH(cur(), d); } }, 0);
+});
+
+/* quick bill: advance and settlement discount */
+function qbPlan(C) {
+  var s = qbState(), d = qbCalc(C), av = s.partyId ? advAvail(C, s.partyId, 'receipt') : 0;
+  var adv = s.adv && av > 0 ? Math.min(av, d.total) : 0, settle = Math.min(P(s.settle), Math.max(0, d.total - adv));
+  return { d: d, av: av, adv: adv, settle: settle, due: d.total - adv - settle };
+}
+
 /* ---------- export: PDF, Excel, CSV ---------- */
 var LIBS = {};
 var LB = window.BILLDNA_LIBS || '';
@@ -6255,8 +6382,12 @@ A.saveDoc = function () {
       '<div class="row">' + (canWrite('purchases', 'po') ? btn('poFromShort', 'Create purchase order for the shortage', {}, 'pri') : '') + btn('closeModal', 'Back to edit', {}, 'line') + '</div>');
     S.short = sh; return;
   }
-  var wasNew = !d.id; commitDoc(C, d); S.draft = null; closeModal();
-  toast(DT[d.type].label + ' ' + d.no + ' saved.'); afterChange();
+  var wasNew = !d.id, pl = null;
+  if (wasNew && (d.type === 'invoice' || d.type === 'pinvoice') && d.pay) { var pe = payCheck(C, d); if (pe) { toast(pe, true); return; } pl = payPlan(C, d); }
+  delete d.pay;
+  commitDoc(C, d); S.draft = null; closeModal();
+  var pm = pl ? paySettle(C, d, pl) : '';
+  toast(DT[d.type].label + ' ' + d.no + ' saved' + (pm ? ': ' + pm : '') + '.'); afterChange();
 };
 A.poFromShort = function () {
   var C = cur(), sh = S.short || []; closeModal();
@@ -6300,8 +6431,9 @@ A.doCancelPay = function (d) { var x = cur().d.payments.find(function (p) { retu
 
 function payInvOptions(type, partyId, sel) {
   var C = cur(), t = type === 'receipt' ? 'invoice' : 'pinvoice';
-  var list = C.d.docs.filter(function (d) { return d.type === t && !d.cancelled && d.partyId === partyId && outstanding(C, d) > 0; });
-  return '<option value="">On account (not against an invoice)</option>' + list.map(function (d) { return '<option value="' + d.id + '"' + (d.id === sel ? ' selected' : '') + '>' + esc(d.no) + ' · balance ' + esc(money(outstanding(C, d))) + '</option>'; }).join('');
+  var list = C.d.docs.filter(function (d) { return (d.type === t || (type === 'receipt' && d.type === 'debitnote')) && !d.cancelled && d.partyId === partyId && outstanding(C, d) > 0; });
+  if (!sel && list.length === 1) sel = list[0].id;
+  return (list.length > 1 && !sel ? '<option value="__auto" selected>Oldest unpaid bills first (auto)</option>' : '') + '<option value="">Advance / on account (not against a bill)</option>' + list.map(function (d) { return '<option value="' + d.id + '"' + (d.id === sel ? ' selected' : '') + '>' + esc(d.no) + ' · balance ' + esc(money(outstanding(C, d))) + '</option>'; }).join('');
 }
 A.newPay = function (d) {
   var C = cur(), type = d.type, ref = d.ref ? docById(C, d.ref) : null;
@@ -6317,8 +6449,10 @@ A.newPay = function (d) {
 };
 A.savePay = function (fd) {
   var C = cur(), type = fd.get('type');
-  var err = addPayment(C, { type: type, partyId: fd.get('party'), amount: P(fd.get('amt')), disc: P(fd.get('disc')), mode: fd.get('mode'), date: fd.get('date'), refId: fd.get('ref'), note: fd.get('note') });
+  var auto = fd.get('ref') === '__auto';
+  var err = addPayment(C, { type: type, partyId: fd.get('party'), amount: P(fd.get('amt')), disc: auto ? 0 : P(fd.get('disc')), mode: fd.get('mode'), date: fd.get('date'), refId: auto ? '' : fd.get('ref'), note: fd.get('note') });
   if (err) { toast(err, true); return; }
+  if (auto) { var left = allocOldest(C, C.d.payments[C.d.payments.length - 1]); if (left > 0) toast('All bills settled. ' + money(left) + ' kept as advance.'); }
   closeModal(); afterChange(); modal(receiptH(C.d.payments[C.d.payments.length - 1])); toast((type === 'receipt' ? 'Receipt' : 'Payment') + ' saved.');
 };
 A.receive = function (d) {
@@ -6373,7 +6507,7 @@ function prodForm(p, pre) {
   var cats = {}; C.d.products.forEach(function (x) { if (x.cat) cats[x.cat] = 1; });
   return '<div class="mh"><h2>' + (p.id ? 'Edit item' : 'New item') + '</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><form data-submit="saveProd"><input type="hidden" name="id" value="' + esc(p.id || '') + '"><label class="ck" style="margin:0 0 12px"><input type="checkbox" name="svc"' + (p.tracked === false ? ' checked' : '') + '> This is a service (no stock)</label><div class="fg">' +
     field('Name', '<input name="name" required value="' + esc(p.name || pre.name || '') + '">', 'wide') + field('Group (optional)', '<input name="cat" list="catlist" maxlength="30" value="' + esc(p.cat || '') + '" placeholder="Example: Sheets, LED, Services"><datalist id="catlist">' + Object.keys(cats).sort().map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist>') + field('HSN/SAC', '<input name="hsn" value="' + esc(p.hsn || '') + '">') + field('Unit', '<input name="unit" value="' + esc(p.unit) + '">') + field('GST %', '<input name="gst" type="number" min="0" step="any" value="' + p.gst + '">') +
-    field('Sale price', '<input name="sale" type="number" min="0" step="any" value="' + rs(p.sale) + '">') + field('Cost price (what you paid)', '<input name="cost" type="number" min="0" step="any" value="' + rs(p.cost) + '">') + field('Wholesale price (optional)', '<input name="wsale" type="number" min="0" step="any" value="' + (p.wsale ? rs(p.wsale) : '') + '">') + field('MRP (optional)', '<input name="mrp" type="number" min="0" step="any" value="' + (p.mrp ? rs(p.mrp) : '') + '">') + field('Minimum stock', '<input name="min" type="number" min="0" step="any" value="' + p.min + '">') +
+    field('Sale price', '<input name="sale" type="number" min="0" step="any" value="' + rs(p.sale) + '">') + '<label class="ck" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="incl"' + (p.incl ? ' checked' : '') + '> Sale price includes GST (MRP style)</label>' + field('Cost price (what you paid)', '<input name="cost" type="number" min="0" step="any" value="' + rs(p.cost) + '">') + field('Wholesale price (optional)', '<input name="wsale" type="number" min="0" step="any" value="' + (p.wsale ? rs(p.wsale) : '') + '">') + field('MRP (optional)', '<input name="mrp" type="number" min="0" step="any" value="' + (p.mrp ? rs(p.mrp) : '') + '">') + field('Minimum stock', '<input name="min" type="number" min="0" step="any" value="' + p.min + '">') +
     (p.id ? '' : field('Opening stock (already in your shop)', '<input name="open" type="number" min="0" step="any" value="0">') + field('Warehouse', '<select name="wh">' + opts(C.d.warehouses) + '</select>')) +
     field('Barcode (scan or type)', '<div style="display:flex;gap:6px"><input name="barcode" maxlength="40" inputmode="numeric" autocomplete="off" value="' + esc(p.barcode || '') + '" placeholder="Scan with your scanner">' + btn('genBarcode', 'Make one', {}, 'sm line') + '</div>') +
     (p.id ? '' : field('Opening batch no (only if batch tracking is on)', '<input name="openBatch" maxlength="30" placeholder="Example: B2410">') + field('Opening expiry date', '<input name="openExp" type="date">')) + '</div>' +
@@ -6387,7 +6521,7 @@ A.saveProd = function (fd) {
   if (!pn) { toast('Enter the item name.', true); return; }
   if ((+fd.get('gst') || 0) > 100 || (+fd.get('gst') || 0) < 0) { toast('GST % must be between 0 and 100.', true); return; }
   if (C.d.products.some(function (x) { return x.id !== eid && x.name.trim().toLowerCase() === pn.toLowerCase(); })) { toast('An item named "' + pn + '" already exists. Search for it instead of adding it again.', true); return; }
-  var o = { serial: !!fd.get('serial') && !!fd.get('tracked') && !fd.get('batch'), wsale: P(fd.get('wsale')), mrp: P(fd.get('mrp')), name: pn, cat: String(fd.get('cat') || '').trim(), hsn: String(fd.get('hsn') || '').trim(), unit: fd.get('unit') || 'pcs', gst: +fd.get('gst') || 0, sale: P(fd.get('sale')), cost: P(fd.get('cost')), min: +fd.get('min') || 0, tracked: !!fd.get('tracked'), barcode: String(fd.get('barcode') || '').trim(), batch: !!fd.get('batch') && !!fd.get('tracked') };
+  var o = { incl: !!fd.get('incl'), serial: !!fd.get('serial') && !!fd.get('tracked') && !fd.get('batch'), wsale: P(fd.get('wsale')), mrp: P(fd.get('mrp')), name: pn, cat: String(fd.get('cat') || '').trim(), hsn: String(fd.get('hsn') || '').trim(), unit: fd.get('unit') || 'pcs', gst: +fd.get('gst') || 0, sale: P(fd.get('sale')), cost: P(fd.get('cost')), min: +fd.get('min') || 0, tracked: !!fd.get('tracked'), barcode: String(fd.get('barcode') || '').trim(), batch: !!fd.get('batch') && !!fd.get('tracked') };
   if (o.barcode) { var dupB = C.d.products.filter(function (x) { return x.id !== eid && x.barcode && x.barcode.toLowerCase() === o.barcode.toLowerCase(); })[0]; if (dupB) { toast('Barcode ' + o.barcode + ' is already used by ' + dupB.name + '.', true); return; } }
   if (fd.get('serial') && fd.get('batch')) { toast('Choose either batch tracking or serial numbers for one item, not both.', true); return; }
   if (eid && o.serial !== !!prodById(C, eid).serial && C.d.moves.some(function (m) { return m.pid === eid; })) { toast('Serial tracking cannot be changed after stock has moved. Make a new item instead.', true); return; }
@@ -6606,13 +6740,15 @@ A.qbSave = function () {
   calc(C, d);
   var err = validateDoc(C, d); if (err) { toast(err, true); return; }
   var sh = shortages(C, d); if (sh.length) { toast('Not enough stock: ' + sh.map(function (x) { return x.name + ' (have ' + qtyF(x.have) + ')'; }).join(', ') + '.', true); return; }
-  var paid = s.paid === null || s.paid === '' ? d.total : P(s.paid);
-  if (paid > d.total) { toast('Amount received is more than the bill total.', true); return; }
-  if (paid < d.total && walk) { toast('Pick a customer for a credit or part payment sale.', true); return; }
+  var q = qbPlan(C), paid = s.paid === null || s.paid === '' ? q.due : P(s.paid);
+  if (P(s.settle) > d.total) { toast('Settlement discount is more than the bill total.', true); return; }
+  if (paid > q.due) { toast('Amount received is more than ' + (q.adv || q.settle ? 'the amount to collect (' + money(q.due) + ').' : 'the bill total.'), true); return; }
+  if (paid < q.due && walk) { toast('Pick a customer for a credit or part payment sale.', true); return; }
   if (!pid) pid = qbWalkin(C).id;
   d.partyId = pid; calc(C, d);
   commitDoc(C, d);
-  if (paid > 0) { var e = addPayment(C, { type: 'receipt', date: today(), partyId: pid, amount: paid, mode: s.mode, refId: d.id }); if (e) toast(e, true); }
+  if (q.adv > 0) useAdvance(C, d, q.adv);
+  if (paid > 0 || q.settle > 0) { var e = addPayment(C, { type: 'receipt', date: today(), partyId: pid, amount: paid, disc: q.settle, mode: s.mode, refId: d.id, note: q.settle ? 'Settlement at billing' : '' }); if (e) toast(e, true); }
   S.qb = null; save(); render(); modal(docPreview(docById(C, d.id)), true); toast('Bill ' + d.no + ' saved.');
 };
 
@@ -6651,7 +6787,8 @@ document.addEventListener('input', function (e) {
   if (t.dataset && t.dataset.qbf) {
     var s = qbState();
     if (t.dataset.qbf === 'paid') { s.paid = t.value === '' ? null : t.value; return; }
-    if (t.dataset.qbf === 'bdt' || t.dataset.qbf === 'bdv') { s[t.dataset.qbf] = t.value; qbRefresh(); return; }
+    if (t.dataset.qbf === 'bdt' || t.dataset.qbf === 'bdv' || t.dataset.qbf === 'settle') { s[t.dataset.qbf] = t.value; qbRefresh(); return; }
+    if (t.dataset.qbf === 'adv') { s.adv = t.checked; qbRefresh(); return; }
     var ci = s.cart[+t.dataset.qi]; if (!ci) return;
     if (t.dataset.qbf === 'rate') ci.rate = P(t.value); else ci.qty = parseFloat(t.value) || 0;
     qbRefresh(); return;
@@ -6689,7 +6826,7 @@ document.addEventListener('change', function (e) {
   if (c === 'copy') { var sel = copySel(C).slice(); sel[+t.dataset.i] = t.checked; if (!sel.some(Boolean)) { sel[+t.dataset.i] = true; t.checked = true; toast('Keep at least one copy ticked.', true); } C.copySel = sel; save(); return; }
   if (c === 'ledgerP') { S.tab.ledgerP = t.value; render(); }
   else if (c === 'acct') { S.tab.acct = t.value; render(); }
-  else if (c === 'qbParty') { qbState().partyId = t.value; qbRefresh(); }
+  else if (c === 'qbParty') { var qs1 = qbState(); qs1.partyId = t.value; qs1.adv = !!t.value && advAvail(cur(), t.value, 'receipt') > 0 && !unpaidDocs(cur(), t.value, 'receipt').length; qs1.paid = null; render(); }
   else if (c === 'qbMode') { qbState().mode = t.value; }
   else if (c === 'role') { var m = C.members.find(function (x) { return x.userId === t.dataset.uid; }); if (m) { m.role = t.value; log('Role changed', t.value); save(); toast('Role updated.'); } }
   else if (c === 'payParty') { var form = t.form; form.elements.ref.innerHTML = payInvOptions(form.elements.type.value, t.value, ''); form.elements.amt.value = ''; }
@@ -6713,7 +6850,7 @@ bindImport(A);
 bindRemind(A);
 bindPrice(A);
 bindRecur(A);
-bindSerial(A); bindTds(A); bindBank(A); bindR2b(A); bindMore(A); bindMore2(A); bindBackup(A);
+bindSerial(A); bindTds(A); bindBank(A); bindR2b(A); bindMore(A); bindMore2(A); bindBackup(A); bindPay(A);
 function boot() {
   DB = load();
   if (!DB) DB = seedDB();
