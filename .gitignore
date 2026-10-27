@@ -5,3 +5,4 @@ android/.gradle/
 android/local.properties
 *.apk
 *.keystore
+!android/app/billdna-debug.keystore
