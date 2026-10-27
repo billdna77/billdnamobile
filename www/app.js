@@ -470,6 +470,9 @@ function useAdvance(C, d, amt) {
   });
   return want - left;
 }
+/* refunds are stored as negative receipts (cash back to a customer) or negative payments (supplier pays you back) */
+function isRefund(p) { return p.amount < 0; }
+function payLabel(p) { return isRefund(p) ? (p.type === 'receipt' ? 'Refund paid' : 'Refund received') : (p.type === 'receipt' ? 'Receipt' : 'Payment'); }
 function unpaidDocs(C, partyId, payType) {
   var types = payType === 'payment' ? ['pinvoice'] : ['invoice', 'debitnote'];
   return C.d.docs.filter(function (d) { return d.partyId === partyId && types.indexOf(d.type) >= 0 && !d.cancelled && outstanding(C, d) > 0; }).sort(function (a, b) { return (a.date + a.no).localeCompare(b.date + b.no); });
@@ -482,7 +485,8 @@ function allocOldest(C, p) {
 }
 function addPayment(C, o) {
   o.disc = Math.max(0, o.disc || 0);
-  if (!(o.amount > 0) && !(o.refId && o.disc > 0)) return 'Enter an amount above zero.';
+  if (o.refund) { if (!(o.amount < 0)) return 'Enter the refund amount.'; o.disc = 0; o.refId = ''; }
+  else if (!(o.amount > 0) && !(o.refId && o.disc > 0)) return 'Enter an amount above zero.';
   if (!o.partyId) return 'Select a party.';
   if (o.refId) {
     var inv = docById(C, o.refId);
@@ -492,7 +496,7 @@ function addPayment(C, o) {
   o.disc = Math.max(0, o.disc || 0);
   var p = { id: uid(), no: nextNo(C, o.type, o.date), date: o.date, type: o.type, partyId: o.partyId, amount: o.amount, disc: o.disc || 0, mode: o.mode, refId: o.refId || '', note: o.note || '', by: (user() || {}).name || '', at: new Date().toISOString() };
   C.d.payments.push(p);
-  log((o.type === 'receipt' ? 'Receipt ' : 'Payment ') + money(o.amount) + (p.disc ? ' with discount ' + money(p.disc) : ''), p.no);
+  log(payLabel(o) + ' ' + money(Math.abs(o.amount)) + (p.disc ? ' with discount ' + money(p.disc) : ''), p.no);
   return '';
 }
 function addProduct(C, o) {
@@ -658,6 +662,7 @@ function editorH() {
     h += '<div class="row" style="align-items:flex-end"><label class="fld" style="max-width:190px"><span>Discount on whole bill</span><select data-f="bdt"><option value="pct"' + (d.bdt === 'amt' ? '' : ' selected') + '>Percent (%)</option><option value="amt"' + (d.bdt === 'amt' ? ' selected' : '') + '>Cash amount (Rs)</option></select></label><label class="fld" style="max-width:150px"><span>Value</span><input class="num" type="number" min="0" step="any" data-f="bdv" value="' + esc(d.bdv || '') + '" placeholder="0"></label><span class="note">Taken off before GST. Leave empty for none.</span></div>';
     h += '<div id="totbox">' + totalsH(C, d) + '</div>';
     if (!d.id && (d.type === 'invoice' || d.type === 'pinvoice')) h += payBoxH(C, d);
+    if (!d.id && (d.type === 'creditnote' || d.type === 'preturn')) h += refundBoxH(C, d);
   }
   if (t.side === 's' && t.items) h += shipH(d);
   h += '<label class="fld"><span>Notes and terms</span><textarea data-f="notes">' + esc(d.notes || '') + '</textarea></label>';
@@ -828,7 +833,7 @@ function payList(type) {
   var mod = type === 'receipt' ? 'sales' : 'purchases';
   return table([['No'], ['Date'], [type === 'receipt' ? 'Customer' : 'Supplier'], ['Mode'], ['Against'], ['Amount', 'r'], ['By'], ['Status'], ['']], rows.map(function (p) {
     var inv = p.refId ? docById(C, p.refId) : null;
-    return ['<b>' + esc(p.no) + '</b>', dmy(p.date), esc(partyName(C, p.partyId)), esc(p.mode), inv ? esc(inv.no) : '<span class="mute">Advance / on account</span>' + (p.alloc ? '<div class="note">Adjusted: ' + Object.keys(p.alloc).map(function (k) { var x = docById(C, k); return x && !x.cancelled ? esc(x.no) + ' ' + money(p.alloc[k]) : ''; }).filter(Boolean).join(', ') + (advFree(C, p) > 0 ? ' · left ' + money(advFree(C, p)) : '') + '</div>' : ''), money(p.amount), esc(p.by || '-'), statusChip(p.cancelled ? 'Cancelled' : type === 'receipt' ? 'Received' : 'Paid'),
+    return ['<b>' + esc(p.no) + '</b>', dmy(p.date), esc(partyName(C, p.partyId)), esc(p.mode), inv ? esc(inv.no) : isRefund(p) ? '<b>' + esc(payLabel(p)) + '</b>' + (p.note ? '<div class="note">' + esc(p.note) + '</div>' : '') : '<span class="mute">Advance / on account</span>' + (p.alloc ? '<div class="note">Adjusted: ' + Object.keys(p.alloc).map(function (k) { var x = docById(C, k); return x && !x.cancelled ? esc(x.no) + ' ' + money(p.alloc[k]) : ''; }).filter(Boolean).join(', ') + (advFree(C, p) > 0 ? ' · left ' + money(advFree(C, p)) : '') + '</div>' : ''), money(p.amount), esc(p.by || '-'), statusChip(p.cancelled ? 'Cancelled' : type === 'receipt' ? 'Received' : 'Paid'),
       '<div class="acts">' + btn('viewPay', 'View', { id: p.id }, 'sm line') + (canWrite(mod, type) && canAdmin(mod) && !p.cancelled ? btn('editPay', 'Edit', { id: p.id }, 'sm line') : '') + (canWrite(mod, type) && !p.cancelled ? btn('cancelPay', 'Cancel', { id: p.id }, 'sm warn') : '') + '</div>'];
   }), 'No ' + (type === 'receipt' ? 'receipts' : 'payments') + ' yet.', null, rows.map(function (p) { return ['viewPay', p.id]; })) + lm.note;
 }
@@ -890,7 +895,7 @@ function dayBookRows(C, dt) {
   var rows = [];
   var DOCL = { invoice: ['Sales', 1], pinvoice: ['Purchase', -1], creditnote: ['Sales return', -1], debitnote: ['Debit note', 1], preturn: ['Purchase return', 1] };
   C.d.docs.forEach(function (x) { var m = DOCL[x.type]; if (!m || x.date !== dt) return; rows.push({ k: x.type, label: m[0], no: x.no, who: partyName(C, x.partyId), amt: x.total || 0, st: statusOf(C, x), cancelled: !!x.cancelled, act: ['view', x.id] }); });
-  C.d.payments.forEach(function (p) { if (p.date !== dt) return; rows.push({ k: p.type, label: p.type === 'receipt' ? 'Receipt' : 'Payment', no: p.no, who: partyName(C, p.partyId) + (p.mode ? ' · ' + p.mode : ''), amt: p.amount, st: p.cancelled ? 'Cancelled' : p.type === 'receipt' ? 'Received' : 'Paid', cancelled: !!p.cancelled, act: ['viewPay', p.id] }); });
+  C.d.payments.forEach(function (p) { if (p.date !== dt) return; rows.push({ k: isRefund(p) ? (p.type === 'receipt' ? 'payment' : 'receipt') : p.type, label: payLabel(p), no: p.no, who: partyName(C, p.partyId) + (p.mode ? ' · ' + p.mode : ''), amt: Math.abs(p.amount), st: p.cancelled ? 'Cancelled' : p.type === 'receipt' ? 'Received' : 'Paid', cancelled: !!p.cancelled, act: ['viewPay', p.id] }); });
   C.d.expenses.forEach(function (e) { if (e.date !== dt) return; rows.push({ k: e.kind === 'income' ? 'income' : 'expense', label: e.kind === 'income' ? 'Income' : 'Expense', no: '-', who: e.cat + (e.mode ? ' · ' + e.mode : ''), amt: e.amount, st: e.kind === 'income' ? 'Received' : 'Paid', cancelled: false, act: null }); });
   return rows;
 }
@@ -1079,7 +1084,7 @@ function vQuick() {
 /* ---------- accounting data ---------- */
 function cashBank(C) {
   var o = C.d.opening, tx = [];
-  C.d.payments.forEach(function (p) { if (p.cancelled || p.mode === 'TDS') return; tx.push({ id: p.id, chq: p.mode === 'Cheque', date: p.date, acct: p.mode === 'Cash' ? 'Cash' : 'Bank', desc: (p.type === 'receipt' ? 'Receipt ' : 'Payment ') + p.no + ' · ' + partyName(C, p.partyId), inn: p.type === 'receipt' ? p.amount : 0, out: p.type === 'payment' ? p.amount : 0 }); });
+  C.d.payments.forEach(function (p) { if (p.cancelled || p.mode === 'TDS') return; tx.push({ id: p.id, chq: p.mode === 'Cheque', date: p.date, acct: p.mode === 'Cash' ? 'Cash' : 'Bank', desc: payLabel(p) + ' ' + p.no + ' · ' + partyName(C, p.partyId), inn: (p.type === 'receipt') === (p.amount >= 0) ? Math.abs(p.amount) : 0, out: (p.type === 'payment') === (p.amount >= 0) ? Math.abs(p.amount) : 0 }); });
   C.d.expenses.forEach(function (e) { tx.push({ id: e.id, date: e.date, acct: e.mode === 'Cash' ? 'Cash' : 'Bank', desc: (e.kind === 'income' ? 'Income: ' : 'Expense: ') + e.cat, inn: e.kind === 'income' ? e.amount : 0, out: e.kind === 'expense' ? e.amount : 0 }); });
   (C.loans || []).forEach(function (l) {
     if (l.recv) tx.push({ id: 'L' + l.id, date: l.start, acct: 'Bank', desc: 'Loan received · ' + l.name, inn: l.principal, out: 0 });
@@ -1228,7 +1233,7 @@ function ledgerH(p) {
     var up = d.type === 'invoice' || d.type === 'debitnote' || d.type === 'pinvoice';
     ev.push({ date: d.date, t: DT[d.type].label + ' ' + d.no, up: up, amt: d.total, can: !!d.cancelled, act: 'view', id: d.id });
   });
-  C.d.payments.forEach(function (x) { if (x.partyId === p.id) ev.push({ date: x.date, t: (x.type === 'receipt' ? 'Receipt ' : 'Payment ') + x.no + ' (' + x.mode + ')' + (x.disc ? ' incl. discount ' + money(x.disc) : ''), up: false, amt: x.amount + (x.disc || 0), can: !!x.cancelled, act: 'viewPay', id: x.id }); });
+  C.d.payments.forEach(function (x) { if (x.partyId === p.id) ev.push({ date: x.date, t: payLabel(x) + ' ' + x.no + ' (' + x.mode + ')' + (x.disc ? ' incl. discount ' + money(x.disc) : ''), up: false, amt: x.amount + (x.disc || 0), can: !!x.cancelled, act: 'viewPay', id: x.id }); });
   ev.sort(function (a, b) { return a.date.localeCompare(b.date); });
   var bal = 0;
   var rows = ev.map(function (e) {
@@ -1410,7 +1415,7 @@ function vGst() {
     h += table([['Item'], ['HSN'], ['In stock', 'r'], ['Avg cost', 'r'], ['Value', 'r'], ['Status']], C.d.products.filter(function (p) { return p.tracked; }).map(function (p) { var q = stockQty(C, p.id), v = Math.max(0, q) * p.cost; tt += v; return [esc(p.name), esc(p.hsn), qtyF(q) + ' ' + esc(p.unit), money(p.cost), money(v), q < p.min ? '<span class="chip warn">Low</span>' : '<span class="chip">OK</span>']; }), 'No stocked products.', ['Total stock value', '', '', '', money(tt), '']);
   } else {
     var pr = C.d.parties.map(function (p) { return [p, partyBalance(C, p)]; }).filter(function (x) { return Math.abs(x[1]) > 0; });
-    h += table([['Party'], ['Type'], ['Phone'], ['Balance', 'r'], ['Meaning']], pr.map(function (x) { var cu = x[0].type === 'customer'; return [esc(x[0].name), cu ? 'Customer' : 'Supplier', esc(x[0].phone || ''), money(Math.abs(x[1])), x[1] > 0 ? (cu ? 'Customer owes you' : 'You owe supplier') : (cu ? 'Advance from customer' : 'Advance to supplier')]; }), 'Nothing outstanding.', null, pr.map(function (x) { return ['ledger', x[0].id]; }));
+    h += table([['Party'], ['Type'], ['Phone'], ['Balance', 'r'], ['Meaning']], pr.map(function (x) { var cu = x[0].type === 'customer'; return [esc(x[0].name), cu ? 'Customer' : 'Supplier', esc(x[0].phone || ''), money(Math.abs(x[1])), x[1] > 0 ? (cu ? 'Customer owes you' : 'You owe supplier') : (cu ? 'Advance from customer' : 'Advance to supplier')]; }), 'Nothing outstanding.', (function () { var rcv = sumBy(pr.filter(function (x) { return x[0].type === 'customer' && x[1] > 0; }), function (x) { return x[1]; }), pyb = sumBy(pr.filter(function (x) { return x[0].type === 'supplier' && x[1] > 0; }), function (x) { return x[1]; }); return ['Total', '', '', money(rcv) + ' to get · ' + money(pyb) + ' to pay', '']; })(), pr.map(function (x) { return ['ledger', x[0].id]; }));
   }
   return h + '</div>';
 }
@@ -5756,7 +5761,7 @@ function dayBookModel(dt) {
   C.d.expenses.forEach(function (e) { if (e.date === dt) { var k = (e.kind === 'income' ? 'Received ' : 'Paid ') + (e.mode || 'Cash'); modes[k] = (modes[k] || 0) + e.amount; } });
   var entries = [], lines = [];
   C.d.docs.forEach(function (x) { if (x.date !== dt || !DOCL_DB[x.type]) return; entries.push([DOCL_DB[x.type], x.no, x.at ? tmStr(x.at).slice(11) : '', partyName(C, x.partyId), dbDocLines(C, x), n(x.sub || 0), n((x.cgst || 0) + (x.sgst || 0) + (x.igst || 0)), n(x.discAmt || 0), n(x.total || 0), x.cancelled ? 'Cancelled' : statusOf(C, x), x.by || '']); (x.items || []).forEach(function (i) { lines.push([x.no, i.name, i.hsn || '', qtyF(i.qty) + ' ' + (i.unit || ''), n(i.rate), +i.disc || 0, n(i.taxable || 0)]); }); });
-  C.d.payments.forEach(function (p) { if (p.date !== dt) return; var inv = p.refId ? docById(C, p.refId) : null; entries.push([p.type === 'receipt' ? 'Receipt' : 'Payment', p.no, p.at ? tmStr(p.at).slice(11) : '', partyName(C, p.partyId), (p.mode || '') + (inv ? ' against ' + inv.no : ' on account') + (p.disc ? ' (discount ' + (p.disc / 100).toFixed(2) + ')' : ''), '', '', n(p.disc || 0), n(p.amount), p.cancelled ? 'Cancelled' : 'Done', p.by || '']); });
+  C.d.payments.forEach(function (p) { if (p.date !== dt) return; var inv = p.refId ? docById(C, p.refId) : null; entries.push([payLabel(p), p.no, p.at ? tmStr(p.at).slice(11) : '', partyName(C, p.partyId), (p.mode || '') + (inv ? ' against ' + inv.no : ' on account') + (p.disc ? ' (discount ' + (p.disc / 100).toFixed(2) + ')' : ''), '', '', n(p.disc || 0), n(p.amount), p.cancelled ? 'Cancelled' : 'Done', p.by || '']); });
   C.d.expenses.forEach(function (e) { if (e.date !== dt) return; entries.push([e.kind === 'income' ? 'Income' : 'Expense', '-', '', e.cat, (e.mode || '') + (e.note ? ' ' + e.note : ''), '', '', '', n(e.amount), 'Done', e.by || '']); });
   var cash = cashBank(C);
   return { title: 'Day Book ' + dmy(dt), sub: C.name + ' · Generated ' + nowStamp(), tables: [
@@ -5904,6 +5909,7 @@ function paySettle(C, d, pl) {
   return msg.join(', ');
 }
 function bindPay(A) {
+  A.refundFull = function () { var C = cur(), d = S.draft; if (!d) return; calc(C, d); var rf = refundState(d); rf.amt = rs(d.total || 0); var i = $('[data-rf=amt]'); if (i) i.value = rf.amt; };
   A.ledgerWa = function (d) {
     var C = cur(), p = partyById(C, d.id); if (!p) return;
     if (!$('#modal table')) A.ledger(d);
@@ -5933,6 +5939,25 @@ function qbPlan(C) {
   var adv = s.adv && av > 0 ? Math.min(av, d.total) : 0, settle = Math.min(P(s.settle), Math.max(0, d.total - adv));
   return { d: d, av: av, adv: adv, settle: settle, due: d.total - adv - settle };
 }
+
+/* returns: give cash back to the customer (or take it back from the supplier) when saving the return */
+function refundState(d) { if (!d.refund) d.refund = { amt: '', mode: 'Cash' }; return d.refund; }
+function refundBoxH(C, d) {
+  var rf = refundState(d), pur = d.type === 'preturn', p = partyById(C, d.partyId), bal = p ? partyBalance(C, p) : 0;
+  var h = '<div class="card paybox" id="refbox" style="background:var(--bg)"><h2>' + (pur ? 'Money back from supplier' : 'Refund to customer') + '</h2>';
+  h += '<div class="note">' + (pur ? 'If the supplier pays you back now, enter it. Otherwise this return reduces what you owe them.' : 'If you give money back now, enter it. Otherwise this return is kept as credit for the customer (adjusted in the next bill).') + (p ? ' Current balance: ' + money(bal) + (bal < 0 ? ' (advance)' : '') + '.' : '') + '</div>';
+  h += '<div class="fg">' + field(pur ? 'Received back now (Rs)' : 'Refund now (Rs)', '<input class="num" type="number" min="0" step="any" inputmode="decimal" data-rf="amt" value="' + esc(rf.amt) + '" placeholder="0 = keep as credit">') + field('Mode', '<select data-rf="mode">' + opts(['Cash', 'UPI', 'Card', 'Bank'], rf.mode) + '</select>') + '</div>';
+  return h + '<div class="row">' + btn('refundFull', pur ? 'Full amount received back' : 'Refund full amount', {}, 'sm line') + '</div></div>';
+}
+function refundCheck(C, d) { var a = P(refundState(d).amt); if (a < 0) return 'Refund cannot be negative.'; if (a > (d.total || 0)) return 'Refund is more than the return total ' + money(d.total || 0) + '.'; return ''; }
+function refundDo(C, d, rf) {
+  var a = P(rf.amt); if (!(a > 0)) return '';
+  var pt = d.type === 'preturn' ? 'payment' : 'receipt';
+  var e = addPayment(C, { type: pt, refund: true, date: d.date || today(), partyId: d.partyId, amount: -a, mode: rf.mode, note: (pt === 'receipt' ? 'Refund for ' : 'Money back for ') + d.no });
+  return e ? (toast(e, true), '') : (pt === 'receipt' ? 'refunded ' : 'received back ') + money(a);
+}
+document.addEventListener('input', function (e) { var t = e.target; if (t && t.dataset && t.dataset.rf && S.draft) refundState(S.draft)[t.dataset.rf] = t.value; });
+document.addEventListener('change', function (e) { var t = e.target; if (t && t.dataset && t.dataset.rf && S.draft) refundState(S.draft)[t.dataset.rf] = t.value; });
 
 /* ---------- export: PDF, Excel, CSV ---------- */
 var LIBS = {};
@@ -6209,18 +6234,18 @@ async function docPdf(d, copies) {
   return doc.output('arraybuffer');
 }
 function payText(p) {
-  var C = cur(), pr = partyById(C, p.partyId) || {}, isR = p.type === 'receipt', inv = p.refId ? docById(C, p.refId) : null;
-  var L = ['*' + C.name + '*', (isR ? 'Receipt ' : 'Payment voucher ') + p.no, 'Date: ' + dmy(p.date), '', (isR ? 'Received from: ' : 'Paid to: ') + (pr.name || '-'), '*Amount: ' + money(p.amount) + '*', 'Mode: ' + p.mode];
+  var C = cur(), pr = partyById(C, p.partyId) || {}, isR = (p.type === 'receipt') === (p.amount >= 0), inv = p.refId ? docById(C, p.refId) : null;
+  var L = ['*' + C.name + '*', (isRefund(p) ? payLabel(p) + ' ' : isR ? 'Receipt ' : 'Payment voucher ') + p.no, 'Date: ' + dmy(p.date), '', (isR ? 'Received from: ' : 'Paid to: ') + (pr.name || '-'), '*Amount: ' + money(Math.abs(p.amount)) + '*', 'Mode: ' + p.mode];
   if (inv) { L.push('Against: ' + inv.no); var b = outstanding(C, inv); L.push(b > 0 ? 'Balance due: ' + money(b) : 'Invoice fully paid'); }
   L.push('', isR ? 'Thank you.' : ''); return L.join('\n');
 }
 function receiptH(p) {
-  var C = cur(), pr = partyById(C, p.partyId) || {}, isR = p.type === 'receipt', inv = p.refId ? docById(C, p.refId) : null;
+  var C = cur(), pr = partyById(C, p.partyId) || {}, isR = (p.type === 'receipt') === (p.amount >= 0), inv = p.refId ? docById(C, p.refId) : null;
   var ph = String(pr.phone || '').replace(/\D/g, ''); if (ph.length === 10) ph = '91' + ph;
-  return '<div class="mh"><h2>' + (isR ? 'Receipt ' : 'Payment voucher ') + esc(p.no) + '</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="pre">' +
+  return '<div class="mh"><h2>' + (isRefund(p) ? payLabel(p) + ' ' : isR ? 'Receipt ' : 'Payment voucher ') + esc(p.no) + '</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="pre">' +
     '<div class="hd"><div><b style="font-size:17px">' + esc(C.name) + '</b><div style="font-size:12px;opacity:.8">' + esc(C.address) + '</div></div><div style="text-align:right"><b>' + (isR ? 'RECEIPT' : 'PAYMENT VOUCHER') + '</b><div style="font-size:12px;opacity:.8">' + esc(p.no) + ' · ' + dmy(p.date) + '</div></div></div>' +
     '<div class="fg"><div><div class="note">' + (isR ? 'Received from' : 'Paid to') + '</div><b>' + esc(pr.name || '-') + '</b></div><div><div class="note">Mode</div><b>' + esc(p.mode) + '</b></div><div><div class="note">Against</div><b>' + (inv ? esc(inv.no) : 'On account') + '</b></div></div>' +
-    '<div class="tot">' + (p.disc ? '<div><span>Discount given</span><span class="num">' + money(p.disc) + '</span></div>' : '') + '<div class="g"><span>Amount</span><span class="num">' + money(p.amount) + '</span></div><div class="note">' + esc(amtWords(p.amount)) + '</div></div>' +
+    '<div class="tot">' + (p.disc ? '<div><span>Discount given</span><span class="num">' + money(p.disc) + '</span></div>' : '') + '<div class="g"><span>Amount</span><span class="num">' + money(Math.abs(p.amount)) + '</span></div><div class="note">' + esc(amtWords(p.amount)) + '</div></div>' +
     (p.note ? '<div class="note">' + esc(p.note) + '</div>' : '') +
     '<div class="note">' + (p.by ? (isR ? 'Received' : 'Entered') + ' by <b>' + esc(p.by) + '</b>' + (p.at ? ' on ' + tmStr(p.at) : '') : '') + (p.editedBy ? ' · Edited by <b>' + esc(p.editedBy) + '</b>' : '') + (p.cancelled ? ' · Cancelled' : '') + '</div>' +
     '<div class="row">' + btn('payPdf', 'Download PDF', { id: p.id }, 'pri') + (isR ? btn('waPay', 'Send on WhatsApp (PDF)', { id: p.id }, '') : '') + btn('copyPay', 'Copy text', { id: p.id }, 'line') + (!p.cancelled && canAdmin(isR ? 'sales' : 'purchases') && canWrite(isR ? 'sales' : 'purchases', p.type) ? btn('editPay', 'Edit', { id: p.id }, 'line') + btn('cancelPay', 'Cancel', { id: p.id }, 'warn') : '') + '</div></div>';
@@ -6228,7 +6253,7 @@ function receiptH(p) {
 async function payPdf(p) {
   await needPdf();
   var J = window.jspdf.jsPDF, doc = new J({ unit: 'pt', format: 'a5' }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 32;
-  var C = cur(), pr = partyById(C, p.partyId) || {}, isR = p.type === 'receipt', inv = p.refId ? docById(C, p.refId) : null;
+  var C = cur(), pr = partyById(C, p.partyId) || {}, isR = (p.type === 'receipt') === (p.amount >= 0), inv = p.refId ? docById(C, p.refId) : null;
   doc.setFillColor(21, 21, 21); doc.rect(0, 0, W, 70, 'F'); doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.text(pdfTxt(C.name), M, 30);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.text(doc.splitTextToSize([C.address, C.phone].filter(Boolean).join('  |  '), W / 2 - M), M, 44);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.text(isR ? 'RECEIPT' : 'PAYMENT VOUCHER', W - M, 28, { align: 'right' }); doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.text(pdfTxt(p.no), W - M, 43, { align: 'right' }); doc.text('Date: ' + dmy(p.date), W - M, 56, { align: 'right' });
@@ -6243,7 +6268,7 @@ async function payPdf(p) {
 }
 function payModel(p) {
   var C = cur(), pr = partyById(C, p.partyId) || {}, inv = p.refId ? docById(C, p.refId) : null;
-  return { title: (p.type === 'receipt' ? 'Receipt ' : 'Payment ') + p.no, sub: C.name, tables: [{ name: 'Voucher', head: ['Field', 'Value'], rows: [['Number', p.no], ['Date', dmy(p.date)], [p.type === 'receipt' ? 'Received from' : 'Paid to', pr.name || ''], ['Mode', p.mode], ['Against', inv ? inv.no : 'On account'], ['Amount', p.amount / 100], ['Note', p.note || '']] }] };
+  return { title: payLabel(p) + ' ' + p.no, sub: C.name, tables: [{ name: 'Voucher', head: ['Field', 'Value'], rows: [['Number', p.no], ['Date', dmy(p.date)], [p.type === 'receipt' ? 'Received from' : 'Paid to', pr.name || ''], ['Mode', p.mode], ['Against', inv ? inv.no : 'On account'], ['Amount', p.amount / 100], ['Note', p.note || '']] }] };
 }
 
 /* ---------- auth and company screens ---------- */
@@ -6384,9 +6409,10 @@ A.saveDoc = function () {
   }
   var wasNew = !d.id, pl = null;
   if (wasNew && (d.type === 'invoice' || d.type === 'pinvoice') && d.pay) { var pe = payCheck(C, d); if (pe) { toast(pe, true); return; } pl = payPlan(C, d); }
-  delete d.pay;
+  var rfd = null; if (wasNew && (d.type === 'creditnote' || d.type === 'preturn') && d.refund) { var re = refundCheck(C, d); if (re) { toast(re, true); return; } rfd = d.refund; }
+  delete d.pay; delete d.refund;
   commitDoc(C, d); S.draft = null; closeModal();
-  var pm = pl ? paySettle(C, d, pl) : '';
+  var pm = pl ? paySettle(C, d, pl) : rfd ? refundDo(C, d, rfd) : '';
   toast(DT[d.type].label + ' ' + d.no + ' saved' + (pm ? ': ' + pm : '') + '.'); afterChange();
 };
 A.poFromShort = function () {
