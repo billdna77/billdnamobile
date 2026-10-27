@@ -42,11 +42,64 @@ if (window.BILLDNA_APK && window.Capacitor && window.Capacitor.isNativePlatform 
     try { var r = await writeDoc(name, data); r.name = name; savedSheet(name, r); }
     catch (e) { toast('Could not save ' + name + ' on this phone. Check storage space.', true); }
   };
+  /* WhatsApp: open the customer's chat directly with the file attached (native WaShare plugin) */
+  var WA = P.WaShare;
+  function waPick() {
+    return WA.apps().then(function (a) {
+      var pref = ''; try { pref = localStorage.getItem('bd_wa_pkg') || ''; } catch (e) { }
+      if (pref === 'com.whatsapp.w4b' && a.business) return pref;
+      if (pref === 'com.whatsapp' && a.whatsapp) return pref;
+      if (a.whatsapp && a.business) return new Promise(function (res) {
+        S.waPickRes = res;
+        modal('<div class="mh"><h2>Which WhatsApp?</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="note">Both WhatsApp and WhatsApp Business are on this phone. Pick the one you use for customers. You can change it later in Menu › Settings › WhatsApp App.</div>' +
+          '<div class="m-imgacts">' + btn('nWaPkg', 'WhatsApp Business', { pkg: 'com.whatsapp.w4b' }, 'pri') + btn('nWaPkg', 'WhatsApp', { pkg: 'com.whatsapp' }, 'line') + '</div>');
+      });
+      return a.business && !a.whatsapp ? 'com.whatsapp.w4b' : a.whatsapp ? 'com.whatsapp' : '';
+    });
+  }
+  A.nWaPkg = function (d) { try { localStorage.setItem('bd_wa_pkg', d.pkg); } catch (e) { } closeModal(); if (S.waPickRes) { var r = S.waPickRes; S.waPickRes = null; r(d.pkg); } };
+  A.nWaReset = function () { try { localStorage.removeItem('bd_wa_pkg'); } catch (e) { } toast('WhatsApp choice cleared. You will be asked next time.'); };
   /* WhatsApp / share buttons: attach the real file */
-  shareFile = async function (name, data, text) {
-    try { var r = await writeCache(name, data); await shareUri(r.uri, name, text); }
+  shareFile = async function (name, data, text, phone) {
+    try {
+      var r = await writeCache(name, data);
+      if (WA && phone) {
+        var pkg = await waPick();
+        if (pkg) { await WA.send({ path: r.uri, phone: phone, text: text || '', pkg: pkg, mime: fileMime(name) }); return; }
+        toast('WhatsApp is not installed. Pick another app.', true);
+      }
+      await shareUri(r.uri, name, text);
+    }
     catch (e) { if (/cancel/i.test(String(e && (e.message || e)))) return; try { var s = await writeDoc(name, data); s.name = name; savedSheet(name, s); toast('Sharing did not open. The file is saved instead.', true); } catch (e2) { shareErr(e2); } }
   };
+  /* make sure the party has a WhatsApp number before sending; ask once and save it to the party */
+  function phoneOk(p) { return waPhone(p).length >= 12; }
+  function askPhone(p, then) {
+    S.waThen = then; S.waParty = p.id;
+    modal('<div class="mh"><h2>WhatsApp number</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="note"><b>' + esc(p.name) + '</b> has no valid mobile number. Enter it once; it is saved to this ' + (p.type === 'supplier' ? 'supplier' : 'customer') + '.</div>' +
+      '<form data-submit="nWaPhone">' + field('Mobile number', '<input name="ph" type="tel" inputmode="numeric" maxlength="13" placeholder="10 digit mobile" value="' + esc(p.phone || '') + '" required>') +
+      '<div class="m-imgacts">' + '<button type="submit" class="btn pri">Save and send</button>' + btn('closeModal', 'Cancel', {}, 'line') + '</div></form>');
+    setTimeout(function () { var i = document.querySelector('#modal input[name=ph]'); if (i) i.focus(); }, 250);
+  }
+  A.nWaPhone = function (fd) {
+    var raw = String(fd.get('ph') || '').replace(/\D/g, '').replace(/^0+/, ''); if (raw.length === 12 && raw.indexOf('91') === 0) raw = raw.slice(2);
+    if (!/^[6-9]\d{9}$/.test(raw)) { toast('Enter a valid 10 digit mobile number.', true); return; }
+    var C = cur(), p = partyById(C, S.waParty); if (!p) return;
+    p.phone = raw; log('Phone added for WhatsApp', p.name); save(); closeModal();
+    var t = S.waThen; S.waThen = null; if (t) t();
+  };
+  var _waShare = A.waShare;
+  A.waShare = function (d) { var C = cur(), x = docById(C, d.id), p = x && partyById(C, x.partyId); if (p && !phoneOk(p) && !/walk-in/i.test(p.name)) { askPhone(p, function () { _waShare(d); }); return; } _waShare(d); };
+  var _waPay = A.waPay;
+  if (_waPay) A.waPay = function (d) { var C = cur(), x = C.d.payments.find(function (q) { return q.id === d.id; }), p = x && partyById(C, x.partyId); if (p && !phoneOk(p)) { askPhone(p, function () { _waPay(d); }); return; } _waPay(d); };
+  /* text-only WhatsApp links (payment reminders) open the chat in the app */
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href^="https://wa.me/"]'); if (!a || !WA) return;
+    e.preventDefault();
+    var u = a.getAttribute('href'), m = u.match(/wa\.me\/(\d*)\?text=(.*)$/), ph = m ? m[1] : '', tx = m ? decodeURIComponent(m[2]) : '';
+    waPick().then(function (pkg) { return WA.chat({ phone: ph, text: tx, pkg: pkg || 'com.whatsapp' }); }).catch(function () { toast('Could not open WhatsApp.', true); });
+  }, true);
+
   /* Print: make the PDF and open the share list (pick your printer app, or Save to Drive) */
   A.print = function () {
     var C = cur(), id = S.mViewId, x = id && docById(C, id), pre = $('#modal .pre');
@@ -92,4 +145,13 @@ if (window.BILLDNA_APK && window.Capacitor && window.Capacitor.isNativePlatform 
       '<div class="row" style="margin:10px 0">' + btn('nBakNow', 'Back up now', {}, 'pri') + btn('nBakShare', 'Send backup to Drive / WhatsApp', {}, 'line') + btn('nBakToggle', mb.on === false ? 'Turn automatic backup on' : 'Turn automatic backup off', {}, 'line') + '</div></div>';
   };
   autoBackupStart = function () { };
+  /* keyboard: the app view shrinks above the keypad (MainActivity); hide the bottom bars and keep the field in sight */
+  var maxH = window.innerHeight;
+  function kbCheck() {
+    var h = window.innerHeight; if (h > maxH) maxH = h;
+    var open = h < maxH - 120; document.documentElement.classList.toggle('kb', open);
+    if (open) { var a = document.activeElement; if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) setTimeout(function () { try { a.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { } }, 60); }
+  }
+  window.addEventListener('resize', kbCheck);
+  document.addEventListener('focusin', function (e) { var t = e.target; if (t && /INPUT|TEXTAREA/.test(t.tagName)) setTimeout(function () { if (document.documentElement.classList.contains('kb')) try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (x) { } }, 350); });
 })();

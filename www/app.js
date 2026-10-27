@@ -6743,6 +6743,7 @@ function boot() {
 var MOB = !!window.BILLDNA_APK || !!(window.matchMedia && window.matchMedia('(max-width: 760px)').matches);
 if (MOB) (function () {
   document.documentElement.classList.add('m');
+  window.__bdCanView = function (v) { try { return canView(v); } catch (e) { return true; } };
   var IP = {
     home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
     bill: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
@@ -6831,7 +6832,7 @@ if (MOB) (function () {
       { id: 'accounting', name: 'Money', icon: 'wallet', v: 'accounting', items: [
         ['Cash & Bank', 'bank', 'mOpen', { v: 'accounting', t: 'cash' }],
         ['Income & Expense', 'wallet', 'mOpen', { v: 'accounting', t: 'inex' }],
-        ['To Collect', 'down', 'mOpen', { v: 'accounting', t: 'recv' }, 'Receivables'],
+        ['To Collect', 'down', 'mOpen', { v: 'accounting', t: 'recv' }, 'Receivables payment reminders whatsapp'],
         ['To Pay', 'up', 'mOpen', { v: 'accounting', t: 'pay' }, 'Payables'],
         ['Expense Report', 'pie', 'mOpen', { v: 'accounting', t: 'exprep' }],
         ['Journals', 'book', 'mOpen', { v: 'accounting', t: 'journal' }],
@@ -6847,6 +6848,7 @@ if (MOB) (function () {
         ['GSTR-9', 'book', 'mOpen', { v: 'gst', t: 'gstr9' }, 'Yearly'],
         ['HSN / SAC', 'hash', 'mOpen', { v: 'gst', t: 'hsn' }]] },
       { id: 'reports', name: 'Reports', icon: 'chart', v: 'gst', items: [
+        ['Day Book', 'book', 'mDay', {}, 'Daily entries, cash in and out'],
         ['Profit & Loss', 'trend', 'mOpen', { v: 'gst', t: 'pl' }],
         ['Sales Report', 'bill', 'mOpen', { v: 'gst', t: 'sales' }],
         ['Purchase Report', 'cart', 'mOpen', { v: 'gst', t: 'purchase' }],
@@ -6870,13 +6872,16 @@ if (MOB) (function () {
         ['Users & Roles', 'shield', 'mOpen', { v: 'settings', t: 'users' }],
         ['Backup', 'cloud', 'mOpen', { v: 'settings', t: 'backup' }],
         ['Recycle Bin', 'trash', 'mOpen', { v: 'settings', t: 'bin' }],
-        ['Audit Log', 'hist', 'mOpen', { v: 'settings', t: 'audit' }]] }
+        ['Audit Log', 'hist', 'mOpen', { v: 'settings', t: 'audit' }],
+        ['WhatsApp App', 'chat', 'nWaReset', {}, 'choose whatsapp or business']] }
     ];
+    var ORDER = ['reports', 'inventory', 'accounting', 'sales', 'purchases', 'parties', 'gst', 'crm', 'settings'];
+    G.sort(function (a, b) { return ORDER.indexOf(a.id) - ORDER.indexOf(b.id); });
     return G.filter(function (g) { return canView(g.v); });
   }
   var GST_TABS = ['sum', 'gstr1', 'gstr3b', 'hsn', 'purreg', 'r2b', 'gstr9'];
   function sectionOf(v, t) { if (v === 'gst') return GST_TABS.indexOf(t || S.tab.gst || 'sum') >= 0 ? 'gst' : 'reports'; return v; }
-  var TITLES = { dashboard: 'Home', quick: 'Quick Bill', sales: 'Sales', purchases: 'Purchases', parties: 'Parties', inventory: 'Items & Stock', accounting: 'Money', gst: 'GST', reports: 'Reports', crm: 'Insights', settings: 'Settings', menu: 'All features' };
+  var TITLES = { daybook: 'Day Book', dashboard: 'Home', quick: 'Quick Bill', sales: 'Sales', purchases: 'Purchases', parties: 'Parties', inventory: 'Items & Stock', accounting: 'Money', gst: 'GST', reports: 'Reports', crm: 'Insights', settings: 'Settings', menu: 'All features' };
 
   /* every sub-tab visible on mobile (simple mode only trims the desktop screens) */
   visTabs = function (C, tabs) { return tabs; };
@@ -6913,35 +6918,64 @@ if (MOB) (function () {
   var _qbRefresh = qbRefresh;
   qbRefresh = function () { _qbRefresh(); var b = $('#mcbar'); if (b) b.outerHTML = qbBar(); };
 
-  function navBtn(act, v, label, icon, on) {
-    return '<button type="button" class="m-tab' + (on ? ' on' : '') + '" data-act="' + act + '"' + (v ? ' data-v="' + v + '"' : '') + (on ? ' aria-current="page"' : '') + '>' + ic(icon) + '<span>' + esc(label) + '</span></button>';
+  function navBtn(act, data, label, icon, on) {
+    return '<button type="button" class="m-tab' + (on ? ' on' : '') + '" data-act="' + act + '" data-root="1"' + dattr(data) + (on ? ' aria-current="page"' : '') + '>' + ic(icon) + '<span>' + esc(label) + '</span></button>';
+  }
+  var MVIEWS = { menu: 1, daybook: 1 };
+  var ROOTS = { dashboard: 1, sales: 1, purchases: 1, daybook: 1, parties: 1, menu: 1 };
+  /* Bills = Sales · Purchases · Day Book in one place */
+  function billSeg(v) {
+    var segs = [];
+    if (canView('sales')) segs.push(['sales', 'Sales', 'invoice']);
+    if (canView('purchases')) segs.push(['purchases', 'Purchases', 'pinvoice']);
+    if (canView('accounting') || role() !== 'cashier') segs.push(['daybook', 'Day Book', '']);
+    return '<div class="m-seg" role="tablist">' + segs.map(function (x) { return '<button type="button" class="' + (x[0] === v ? 'on' : '') + '" data-act="' + (x[0] === 'daybook' ? 'mDay' : 'mOpen') + '" data-v="' + x[0] + '" data-t="' + x[2] + '" data-root="1">' + esc(x[1]) + '</button>'; }).join('') + '</div>';
   }
   shellH = function () {
     var C = cur();
-    if (S.view !== 'menu' && !canView(S.view)) S.view = 'dashboard';
-    var v = S.view, home = v === 'dashboard', sec = sectionOf(v);
+    if (!MVIEWS[S.view] && !canView(S.view)) S.view = 'dashboard';
+    var v = S.view, home = v === 'dashboard', sec = sectionOf(v), bills = v === 'sales' || v === 'purchases' || v === 'daybook';
+    var back = (S.mHist && S.mHist.length) || !ROOTS[v];
+    var title = bills ? 'Bills' : v === 'parties' ? 'Parties' : (TITLES[sec] || 'Bill DNA');
     var bar = '<header class="m-top">' + (home ? '<div class="m-co"><b>' + esc(C.name) + '</b><span>FY ' + fyLabel(today()) + ' · ' + esc(role()) + '</span></div>'
-      : '<button type="button" class="m-ib" data-act="mHome" aria-label="Back to home">' + ic('back') + '</button><div class="m-co"><b>' + esc(TITLES[sec] || 'Bill DNA') + '</b><span>' + esc(C.name) + '</span></div>') +
-      '<button type="button" class="m-ib" data-act="mMenu" data-s="1" aria-label="Search features">' + ic('search') + '</button></header>';
-    var mainSecs = ['dashboard', 'sales', 'inventory', 'menu', 'quick'];
-    var nav = '<nav class="m-nav" aria-label="Main">' + navBtn('nav', 'dashboard', 'Home', 'home', home) +
-      (canView('sales') ? navBtn('mOpen', 'sales" data-t="invoice', 'Sales', 'bill', v === 'sales') : '') +
+      : (back ? '<button type="button" class="m-ib" data-act="mBack" aria-label="Back">' + ic('back') + '</button>' : '') + '<div class="m-co"><b>' + esc(title) + '</b><span>' + esc(C.name) + '</span></div>') +
+      '<button type="button" class="m-ib" data-act="mMenu" data-s="1" aria-label="Search">' + ic('search') + '</button></header>';
+    var nav = '<nav class="m-nav" aria-label="Main">' + navBtn('nav', { v: 'dashboard' }, 'Home', 'home', home) +
+      (canView('sales') ? navBtn('mOpen', { v: 'sales', t: 'invoice' }, 'Bills', 'bill', bills) : '') +
       '<button type="button" class="m-fab" data-act="mCreate" aria-label="Create">' + ic('plus') + '<span>Create</span></button>' +
-      (canView('inventory') ? navBtn('nav', 'inventory', 'Items', 'box', v === 'inventory') : '') +
-      navBtn('mMenu', '', 'All', 'all', mainSecs.indexOf(v) < 0 || v === 'menu') + '</nav>';
-    return '<div class="shell m-shell v-' + esc(v) + '">' + bar + '<main class="main">' + (v === 'menu' ? menuH() : V[v]()) + '</main>' + (v === 'quick' ? qbBar() : '') + nav + '</div>';
+      (canView('parties') ? navBtn('mOpen', { v: 'parties', t: S.tab.parties || 'customer' }, 'Parties', 'users', v === 'parties') : '') +
+      navBtn('mMenu', {}, 'Menu', 'all', !home && !bills && v !== 'parties' && v !== 'quick') + '</nav>';
+    var body = v === 'menu' ? menuH() : v === 'daybook' ? dayBookView() : V[v]();
+    return '<div class="shell m-shell v-' + esc(v) + '">' + bar + '<main class="main">' + (bills ? billSeg(v) : '') + body + '</main>' + (v === 'quick' ? qbBar() : '') + nav + '</div>';
   };
-
+  function dayBookView() { var C = cur(); var h = dayBookH(C); return h || '<div class="empty">Day Book is not available for your role.</div>'; }
+  /* simple back history across screens; bottom-bar taps start fresh */
+  function pushHist(d) {
+    if (d && d.root) { S.mHist = []; return; }
+    S.mHist = S.mHist || []; var cur0 = { v: S.view, t: S.tab[S.view] };
+    var last = S.mHist[S.mHist.length - 1];
+    if (!last || last.v !== cur0.v || last.t !== cur0.t) S.mHist.push(cur0);
+    if (S.mHist.length > 20) S.mHist.shift();
+  }
+  A.mBack = function () {
+    var h = (S.mHist || []).pop();
+    if (!h) { A.nav({ v: 'dashboard', root: 1 }); return; }
+    if (h.v === 'menu') { S.view = 'menu'; S.draft = null; render(); filterMenu(); return; }
+    if (h.v === 'daybook') { S.view = 'daybook'; S.draft = null; render(); return; }
+    S.flt = null; S.lim = {}; S.q = ''; S.draft = null; S.view = h.v; if (h.t) S.tab[h.v] = h.t; render();
+  };
+  A.mDay = function (d) { pushHist(d); closeModal(); S.view = 'daybook'; S.draft = null; S.top = true; render(); };
+  var _nav = A.nav; A.nav = function (d) { if (d && d.v !== S.view) pushHist(d); _nav(d); };
   function tile(x, cls) { return '<button type="button" class="m-qa ' + (cls || '') + '" data-act="' + x[2] + '"' + dattr(x[3]) + ' data-k="' + esc((x[0] + ' ' + (x[4] || '')).toLowerCase()) + '"><i>' + ic(x[1]) + '</i><span>' + esc(x[0]) + '</span></button>'; }
 
   /* All features page: every screen as a labelled tile, grouped, searchable */
   function menuH() {
     var u = user(), C = cur();
-    var h = '<div class="m-search">' + ic('search') + '<input id="mfq" type="search" placeholder="Search any feature — GSTR, stock, expense…" autocomplete="off" aria-label="Search features" value="' + esc(S.mfq || '') + '"></div>';
+    var h = '<div class="m-search">' + ic('search') + '<input id="mfq" type="search" placeholder="Search features, bills, parties, items…" autocomplete="off" aria-label="Search features" value="' + esc(S.mfq || '') + '"></div>';
     h += featureMap().map(function (g) {
       return '<section class="card m-card m-grp" data-g="' + g.id + '"><div class="m-gh"><span class="m-gi">' + ic(g.icon) + '</span><h2>' + esc(g.name) + '</h2></div><div class="m-qgrid">' + g.items.map(function (x) { return tile(x); }).join('') + '</div></section>';
     }).join('');
-    h += '<div class="empty" id="mfnone" hidden>No feature matches. Try another word.</div>';
+    h += '<div id="mfdata" class="m-fdata"></div><div class="empty" id="mfnone" hidden>No feature matches. Try another word.</div>';
     h += '<section class="card m-card"><div class="m-me">' + avatar(u.name) + '<div><b>' + esc(u.name) + '</b><span>' + esc(C.name) + ' · ' + esc(role()) + '</span></div></div>' +
       '<div class="m-acts">' + btn('mSwitch', 'Switch company', {}, 'line') + btn('mOut', 'Sign out', {}, 'line') + '</div><div class="note">Bill DNA · data is kept on this phone. Take a backup from Settings › Backup.</div></section>';
     return h;
@@ -6953,15 +6987,17 @@ if (MOB) (function () {
       g.querySelectorAll('.m-qa').forEach(function (t) { var ok = !q || t.dataset.k.indexOf(q) >= 0 || gname.indexOf(q) >= 0; t.hidden = !ok; if (ok) shown++; });
       g.hidden = !shown; if (shown) any = true;
     });
-    var n = $('#mfnone'); if (n) n.hidden = any;
+    var n = $('#mfnone'), dt = $('#mfdata'), res = '';
+    if (dt) { if (q.length >= 2 && typeof hmSearchRes === 'function') { try { res = hmSearchRes(cur(), q); } catch (e) { res = ''; } } dt.innerHTML = res ? '<section class="card m-card"><h2>Bills, parties and items</h2>' + res + '</section>' : ''; }
+    if (n) n.hidden = any || !!res;
   }
   document.addEventListener('input', function (e) { if (e.target && e.target.id === 'mfq') { S.mfq = e.target.value; filterMenu(); } });
 
-  A.mMenu = function (d) { S.view = 'menu'; S.draft = null; S.top = true; if (!d || !d.s) S.mfq = ''; render(); filterMenu(); if (d && d.s) { var i = $('#mfq'); if (i) i.focus(); } };
+  A.mMenu = function (d) { if (S.view !== 'menu') pushHist(d); S.view = 'menu'; S.draft = null; S.top = true; if (!d || !d.s) S.mfq = ''; render(); filterMenu(); if (d && d.s) { var i = $('#mfq'); if (i) i.focus(); } };
   A.mHome = function () { A.nav({ v: 'dashboard' }); };
   A.mOpen = function (d) {
     if (!canView(d.v)) return;
-    closeModal(); S.flt = null; S.lim = {}; S.q = ''; S.draft = null; S.view = d.v; S.tab[d.v] = d.t; if (d.v === 'sales') S.force = d.t; S.top = true; render();
+    pushHist(d); closeModal(); S.flt = null; S.lim = {}; S.q = ''; S.draft = null; S.view = d.v; S.tab[d.v] = d.t; if (d.v === 'sales') S.force = d.t; S.top = true; render();
   };
   A.mDo = function (d) { closeModal(); var f = A[d.a]; if (f) f(d); };
   A.mSwitch = function () { closeModal(); A.switchCo(); };
@@ -7003,7 +7039,7 @@ if (MOB) (function () {
     var pay = sumBy(d.parties.filter(function (p) { return p.type === 'supplier'; }), function (p) { return Math.max(0, partyBalance(C, p)); });
     var over = inv.filter(function (x) { return x.due && x.due < t && outstanding(C, x) > 0; });
     var low = lowItems(C), cb = cashBank(C), first = String((u && u.name) || '').split(' ')[0];
-    var h = '<div class="m-greet">' + hmGreet() + (first ? ', ' + esc(first) : '') + '<span>' + DAYS[new Date().getDay()] + ', ' + dmy(t) + '</span></div>';
+    var h = '<div class="m-greet">' + hmGreet() + (first ? ', ' + esc(first) : '') + '<span>' + DAYS[new Date().getDay()] + ', ' + dmy(t) + ' · <b class="m-clock">' + new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) + '</b></span></div>';
     h += '<section class="m-hero"><div class="m-hl">Today\'s sale</div><div class="m-hv num">' + money(sumBy(tod, function (x) { return x.total; })) + '</div>' +
       '<div class="m-hs">' + tod.length + ' bill(s) today · This month <b class="num">' + money(sumBy(mon, function (x) { return x.total; })) + '</b></div>' +
       '<div class="m-hc"><button type="button" data-act="mOpen" data-v="accounting" data-t="cash">Cash<b class="num">' + money(cb.cash) + '</b></button><button type="button" data-act="mOpen" data-v="accounting" data-t="cash">Bank<b class="num">' + money(cb.bank) + '</b></button></div></section>';
@@ -7025,9 +7061,22 @@ if (MOB) (function () {
     if (low.length) al += '<button type="button" class="m-alert" data-act="mOpen" data-v="gst" data-t="lowstock">' + ic('box') + '<span><b>' + low.length + ' item(s) low on stock</b>' + esc(nameList(low.map(function (p) { return p.name; }), 2)) + '</span>' + ic('chev') + '</button>';
     h += homeActions(C, true) + al;
     if (typeof hmSearchH === 'function') h += hmSearchH(C);
-    var secs = featureMap().map(function (g) { return [g.name, g.icon, 'mOpen', { v: g.v, t: g.items[0][3].t || '' }]; }).filter(function (x) { return x[0] !== 'Sales' || true; });
-    secs.forEach(function (x) { if (x[0] === 'Sales') x[3] = { v: 'sales', t: 'invoice' }; });
-    h += '<section class="card m-card"><div class="m-gh"><h2>Your business</h2>' + btn('mMenu', 'See all', {}, 'sm line') + '</div><div class="m-qgrid">' + secs.map(function (x) { return tile(x, 'sec'); }).join('') + '</div></section>';
+    /* today in one card: what came in, what went out (full Day Book one tap away) */
+    if (canView('accounting') || role() !== 'cashier') {
+      var dr = dayBookRows(C, t).filter(function (r) { return !r.cancelled; }), sk = function (k) { return sumBy(dr.filter(function (r) { return r.k === k; }), function (r) { return r.amt; }); };
+      h += '<section class="card m-card"><div class="m-gh"><h2>Today</h2>' + btn('mDay', 'Day Book', {}, 'sm line') + '</div><div class="m-today">' +
+        '<div><span>Sales</span><b class="num">' + money(sk('invoice') - sk('creditnote')) + '</b></div><div><span>Purchases</span><b class="num">' + money(sk('pinvoice') - sk('preturn')) + '</b></div>' +
+        '<div><span>Money in</span><b class="num get">' + money(sk('receipt') + sk('income')) + '</b></div><div><span>Money out</span><b class="num give">' + money(sk('payment') + sk('expense')) + '</b></div></div>' +
+        '<div class="note">' + dr.length + ' entr' + (dr.length === 1 ? 'y' : 'ies') + ' today</div></section>';
+    }
+    var sc = [];
+    if (canView('inventory')) sc.push(['Items & Stock', 'box', 'mOpen', { v: 'inventory', t: 'products' }]);
+    if (canView('gst')) sc.push(['Reports', 'chart', 'mOpen', { v: 'gst', t: 'pl' }]);
+    if (canView('accounting')) sc.push(['To Collect', 'down', 'mOpen', { v: 'accounting', t: 'recv' }], ['Expenses', 'wallet', 'mOpen', { v: 'accounting', t: 'inex' }], ['Cash & Bank', 'bank', 'mOpen', { v: 'accounting', t: 'cash' }]);
+    if (canView('gst')) sc.push(['GST', 'percent', 'mOpen', { v: 'gst', t: 'sum' }]);
+    if (canView('purchases')) sc.push(['Purchases', 'cart', 'mOpen', { v: 'purchases', t: 'pinvoice' }]);
+    sc.push(['All features', 'all', 'mMenu', {}]);
+    h += '<section class="card m-card"><div class="m-gh"><h2>Shortcuts</h2></div><div class="m-qgrid">' + sc.slice(0, 8).map(function (x) { return tile(x, 'sec'); }).join('') + '</div></section>';
     var docs = d.docs.filter(function (x) { return DT[x.type] && DT[x.type].items; }).sort(function (a, b) { return (b.date + b.no).localeCompare(a.date + a.no); }).slice(0, 8);
     h += '<section class="card m-card"><div class="m-gh"><h2>Recent</h2>' + (canView('sales') ? btn('mOpen', 'See all', { v: 'sales', t: 'invoice' }, 'sm line') : '') + '</div>' +
       (docs.length ? '<div class="m-list">' + docs.map(function (x) {
@@ -7039,6 +7088,18 @@ if (MOB) (function () {
     return h;
   };
 
+  setInterval(function () { var c = document.querySelector('.m-clock'); if (c) c.textContent = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }, 20000);
+  /* Parties: totals on top and a reminders shortcut */
+  var _vParties = V.parties;
+  V.parties = function () {
+    var C = cur(), d = C.d;
+    var recv = sumBy(d.parties.filter(function (p) { return p.type === 'customer'; }), function (p) { return Math.max(0, partyBalance(C, p)); });
+    var pay = sumBy(d.parties.filter(function (p) { return p.type === 'supplier'; }), function (p) { return Math.max(0, partyBalance(C, p)); });
+    var h = '<div class="m-two"><button type="button" class="m-sum get" data-act="mOpen" data-v="accounting" data-t="recv"><span>' + ic('down') + 'You will get</span><b class="num">' + money(recv) + '</b><em>Tap for reminders</em></button>' +
+      '<button type="button" class="m-sum give" data-act="mOpen" data-v="accounting" data-t="pay"><span>' + ic('up') + 'You will pay</span><b class="num">' + money(pay) + '</b><em>To suppliers</em></button></div>';
+    return h + _vParties();
+  };
+
   /* Android back button: close sheet, then draft, then go home, then exit */
   try {
     var CapApp = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
@@ -7046,7 +7107,8 @@ if (MOB) (function () {
       if (!$('#modal').hidden) { closeModal(); return; }
       if (DB && DB.session && cur()) {
         if (S.draft) { S.draft = null; render(); return; }
-        if (S.view !== 'dashboard') { A.nav({ v: 'dashboard' }); return; }
+        if (S.mHist && S.mHist.length) { A.mBack(); return; }
+        if (S.view !== 'dashboard') { A.nav({ v: 'dashboard', root: 1 }); return; }
       }
       CapApp.exitApp();
     });
@@ -7272,11 +7334,64 @@ if (window.BILLDNA_APK && window.Capacitor && window.Capacitor.isNativePlatform 
     try { var r = await writeDoc(name, data); r.name = name; savedSheet(name, r); }
     catch (e) { toast('Could not save ' + name + ' on this phone. Check storage space.', true); }
   };
+  /* WhatsApp: open the customer's chat directly with the file attached (native WaShare plugin) */
+  var WA = P.WaShare;
+  function waPick() {
+    return WA.apps().then(function (a) {
+      var pref = ''; try { pref = localStorage.getItem('bd_wa_pkg') || ''; } catch (e) { }
+      if (pref === 'com.whatsapp.w4b' && a.business) return pref;
+      if (pref === 'com.whatsapp' && a.whatsapp) return pref;
+      if (a.whatsapp && a.business) return new Promise(function (res) {
+        S.waPickRes = res;
+        modal('<div class="mh"><h2>Which WhatsApp?</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="note">Both WhatsApp and WhatsApp Business are on this phone. Pick the one you use for customers. You can change it later in Menu › Settings › WhatsApp App.</div>' +
+          '<div class="m-imgacts">' + btn('nWaPkg', 'WhatsApp Business', { pkg: 'com.whatsapp.w4b' }, 'pri') + btn('nWaPkg', 'WhatsApp', { pkg: 'com.whatsapp' }, 'line') + '</div>');
+      });
+      return a.business && !a.whatsapp ? 'com.whatsapp.w4b' : a.whatsapp ? 'com.whatsapp' : '';
+    });
+  }
+  A.nWaPkg = function (d) { try { localStorage.setItem('bd_wa_pkg', d.pkg); } catch (e) { } closeModal(); if (S.waPickRes) { var r = S.waPickRes; S.waPickRes = null; r(d.pkg); } };
+  A.nWaReset = function () { try { localStorage.removeItem('bd_wa_pkg'); } catch (e) { } toast('WhatsApp choice cleared. You will be asked next time.'); };
   /* WhatsApp / share buttons: attach the real file */
-  shareFile = async function (name, data, text) {
-    try { var r = await writeCache(name, data); await shareUri(r.uri, name, text); }
+  shareFile = async function (name, data, text, phone) {
+    try {
+      var r = await writeCache(name, data);
+      if (WA && phone) {
+        var pkg = await waPick();
+        if (pkg) { await WA.send({ path: r.uri, phone: phone, text: text || '', pkg: pkg, mime: fileMime(name) }); return; }
+        toast('WhatsApp is not installed. Pick another app.', true);
+      }
+      await shareUri(r.uri, name, text);
+    }
     catch (e) { if (/cancel/i.test(String(e && (e.message || e)))) return; try { var s = await writeDoc(name, data); s.name = name; savedSheet(name, s); toast('Sharing did not open. The file is saved instead.', true); } catch (e2) { shareErr(e2); } }
   };
+  /* make sure the party has a WhatsApp number before sending; ask once and save it to the party */
+  function phoneOk(p) { return waPhone(p).length >= 12; }
+  function askPhone(p, then) {
+    S.waThen = then; S.waParty = p.id;
+    modal('<div class="mh"><h2>WhatsApp number</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="note"><b>' + esc(p.name) + '</b> has no valid mobile number. Enter it once; it is saved to this ' + (p.type === 'supplier' ? 'supplier' : 'customer') + '.</div>' +
+      '<form data-submit="nWaPhone">' + field('Mobile number', '<input name="ph" type="tel" inputmode="numeric" maxlength="13" placeholder="10 digit mobile" value="' + esc(p.phone || '') + '" required>') +
+      '<div class="m-imgacts">' + '<button type="submit" class="btn pri">Save and send</button>' + btn('closeModal', 'Cancel', {}, 'line') + '</div></form>');
+    setTimeout(function () { var i = document.querySelector('#modal input[name=ph]'); if (i) i.focus(); }, 250);
+  }
+  A.nWaPhone = function (fd) {
+    var raw = String(fd.get('ph') || '').replace(/\D/g, '').replace(/^0+/, ''); if (raw.length === 12 && raw.indexOf('91') === 0) raw = raw.slice(2);
+    if (!/^[6-9]\d{9}$/.test(raw)) { toast('Enter a valid 10 digit mobile number.', true); return; }
+    var C = cur(), p = partyById(C, S.waParty); if (!p) return;
+    p.phone = raw; log('Phone added for WhatsApp', p.name); save(); closeModal();
+    var t = S.waThen; S.waThen = null; if (t) t();
+  };
+  var _waShare = A.waShare;
+  A.waShare = function (d) { var C = cur(), x = docById(C, d.id), p = x && partyById(C, x.partyId); if (p && !phoneOk(p) && !/walk-in/i.test(p.name)) { askPhone(p, function () { _waShare(d); }); return; } _waShare(d); };
+  var _waPay = A.waPay;
+  if (_waPay) A.waPay = function (d) { var C = cur(), x = C.d.payments.find(function (q) { return q.id === d.id; }), p = x && partyById(C, x.partyId); if (p && !phoneOk(p)) { askPhone(p, function () { _waPay(d); }); return; } _waPay(d); };
+  /* text-only WhatsApp links (payment reminders) open the chat in the app */
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href^="https://wa.me/"]'); if (!a || !WA) return;
+    e.preventDefault();
+    var u = a.getAttribute('href'), m = u.match(/wa\.me\/(\d*)\?text=(.*)$/), ph = m ? m[1] : '', tx = m ? decodeURIComponent(m[2]) : '';
+    waPick().then(function (pkg) { return WA.chat({ phone: ph, text: tx, pkg: pkg || 'com.whatsapp' }); }).catch(function () { toast('Could not open WhatsApp.', true); });
+  }, true);
+
   /* Print: make the PDF and open the share list (pick your printer app, or Save to Drive) */
   A.print = function () {
     var C = cur(), id = S.mViewId, x = id && docById(C, id), pre = $('#modal .pre');
@@ -7322,6 +7437,15 @@ if (window.BILLDNA_APK && window.Capacitor && window.Capacitor.isNativePlatform 
       '<div class="row" style="margin:10px 0">' + btn('nBakNow', 'Back up now', {}, 'pri') + btn('nBakShare', 'Send backup to Drive / WhatsApp', {}, 'line') + btn('nBakToggle', mb.on === false ? 'Turn automatic backup on' : 'Turn automatic backup off', {}, 'line') + '</div></div>';
   };
   autoBackupStart = function () { };
+  /* keyboard: the app view shrinks above the keypad (MainActivity); hide the bottom bars and keep the field in sight */
+  var maxH = window.innerHeight;
+  function kbCheck() {
+    var h = window.innerHeight; if (h > maxH) maxH = h;
+    var open = h < maxH - 120; document.documentElement.classList.toggle('kb', open);
+    if (open) { var a = document.activeElement; if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) setTimeout(function () { try { a.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { } }, 60); }
+  }
+  window.addEventListener('resize', kbCheck);
+  document.addEventListener('focusin', function (e) { var t = e.target; if (t && /INPUT|TEXTAREA/.test(t.tagName)) setTimeout(function () { if (document.documentElement.classList.contains('kb')) try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (x) { } }, 350); });
 })();
 
 initStore(boot);
