@@ -203,3 +203,21 @@ html.m .m-imgacts .btn.pri{background:var(--m-acc);border-color:var(--m-acc);col
 html.m #modal .mh .btn.pri{background:var(--m-acc);border-color:var(--m-acc);color:#fff;margin-left:auto;margin-right:8px}
 
 html.m #toast{transform:none!important;max-width:none!important;width:auto!important}
+
+/* ---------- reports: statements, compact filters, totals ---------- */
+html.m table.mt2{width:100%;min-width:0!important;border-collapse:collapse;font-size:14.5px}
+html.m table.mt2 td{padding:11px 2px;border-top:1px solid var(--line);vertical-align:baseline}
+html.m table.mt2 tr:first-child td{border-top:0}
+html.m table.mt2 td:last-child{text-align:right;font-family:var(--fm);white-space:nowrap;padding-left:12px}
+html.m table.mt2 tfoot td{border-top:2px solid var(--ink);font-weight:600;padding-top:12px}
+html.m table.mt2 tr.clk:active td{background:var(--soft)}
+html.m table.mt tfoot tr{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+html.m table.mt tfoot td:before{color:rgba(255,255,255,.7)}
+html.m table.mt tfoot td:first-child{border-bottom-color:rgba(255,255,255,.25)}
+html.m .row:has(> .fld > input[data-range]){display:grid;grid-template-columns:1fr 1fr;gap:8px}
+html.m .row:has(> .fld > input[data-range]) > .btn{min-height:38px;font-size:13px;padding:0 6px}
+html.m .row:has(> .fld > input[data-range]) > .fld input{min-height:44px;font-size:15px!important}
+html.m .row:has(> .fld > input[data-range]){grid-template-columns:repeat(6,1fr)}
+html.m .row:has(> .fld > input[data-range]) > .fld{grid-column:span 3}
+html.m .row:has(> .fld > input[data-range]) > .btn{grid-column:span 2}
+html.m table.mt2 thead{display:none}

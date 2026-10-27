@@ -126,7 +126,7 @@ function normCompany(C) {
   C.bank = C.bank || { name: '', acc: '', ifsc: '', upi: '' };
   C.members = C.members || []; C.scheme = C.scheme || 'regular'; C.mode = C.mode || 'full'; C.bizType = C.bizType || 'other'; C.state = C.state || 'Tamil Nadu';
   C.d.trash = C.d.trash || [];
-  C.itcBf = C.itcBf || { ig: 0, cg: 0, sg: 0 }; C.g9 = C.g9 || {}; if (C.dailyPopup == null) C.dailyPopup = true; C.lastReport = C.lastReport || '';
+  C.itcBf = C.itcBf || { ig: 0, cg: 0, sg: 0 }; C.g9 = C.g9 || {}; if (C.dailyPopup == null) C.dailyPopup = false; C.pf = Object.assign({ dueDays: 15, validDays: 14, terms: '', footer: '', sig: 'Authorised signatory', stamp: true, lowHome: true, idle: 0 }, C.pf || {}); C.lastReport = C.lastReport || '';
   C.copyNames = (C.copyNames && C.copyNames.length === 3) ? C.copyNames : ['Original for Recipient', 'Duplicate for Transporter', 'Triplicate for Supplier'];
   C.copySel = (C.copySel && C.copySel.length === 3) ? C.copySel : [true, false, false];
   C.address = C.address || ''; C.phone = C.phone || ''; C.email = C.email || ''; C.gstin = C.gstin || '';
@@ -190,7 +190,7 @@ function cur() { return DB.companies.find(function (c) { return c.id === (DB.ses
 function role() { var c = cur(), u = user(); if (!c || !u) return 'cashier'; var m = c.members.find(function (x) { return x.userId === u.id; }); return m ? m.role : 'cashier'; }
 function canView(m) {
   var r = role(); if (r === 'owner') return true;
-  var map = { manager: ['dashboard', 'quick', 'sales', 'purchases', 'inventory', 'accounting', 'gst', 'parties'], cashier: ['dashboard', 'quick', 'sales', 'parties'], accountant: ['dashboard', 'purchases', 'accounting', 'gst', 'parties', 'inventory'] };
+  var map = { manager: ['dashboard', 'quick', 'sales', 'purchases', 'inventory', 'accounting', 'gst', 'parties', 'bin'], cashier: ['dashboard', 'quick', 'sales', 'parties'], accountant: ['dashboard', 'purchases', 'accounting', 'gst', 'parties', 'inventory', 'bin'] };
   return (map[r] || []).indexOf(m) >= 0;
 }
 function canWrite(m, sub) {
@@ -200,7 +200,7 @@ function canWrite(m, sub) {
   if (r === 'accountant') return m === 'accounting' || m === 'parties' || (m === 'purchases' && (sub === 'payment' || sub === 'pinvoice'));
   return false;
 }
-function log(act, ref) { var C = cur(); if (!C) return; C.d.audit.unshift({ ts: new Date().toISOString(), user: (user() || {}).name || '-', act: act, ref: ref || '' }); if (C.d.audit.length > 400) C.d.audit.length = 400; }
+function log(act, ref) { var C = cur(); if (!C) return; C.d.audit.unshift({ ts: new Date().toISOString(), user: (user() || {}).name || '-', act: act, ref: ref || '' }); if (C.d.audit.length > 5000) C.d.audit.length = 5000; }
 
 /* ---------- toast + modal ---------- */
 var toastT = null;
@@ -280,6 +280,23 @@ function calc(C, d) {
     if (inter) { it.igst = tax; it.cgst = 0; it.sgst = 0; } else { it.cgst = Math.round(tax / 2); it.sgst = tax - it.cgst; it.igst = 0; }
     sub += it.taxable; cg += it.cgst; sg += it.sgst; ig += it.igst;
   });
+  var bdAmt = 0;
+  if (sub > 0 && d.bdv !== undefined && d.bdv !== '' && +d.bdv > 0) {
+    bdAmt = d.bdt === 'amt' ? Math.min(sub, P(d.bdv)) : Math.round(sub * Math.min(100, +d.bdv) / 100);
+    if (bdAmt > 0) {
+      var left = bdAmt, base = sub, its = d.items || [];
+      sub = 0; cg = 0; sg = 0; ig = 0;
+      its.forEach(function (it, ix) {
+        var sh = ix === its.length - 1 ? left : Math.min(left, Math.round(bdAmt * it.taxable / base));
+        left -= sh; it.taxable -= sh;
+        var rate2 = reg ? (+it.gst || 0) : 0, tax2 = Math.round(it.taxable * rate2 / 100);
+        it.tax = tax2;
+        if (inter) { it.igst = tax2; it.cgst = 0; it.sgst = 0; } else { it.cgst = Math.round(tax2 / 2); it.sgst = tax2 - it.cgst; it.igst = 0; }
+        sub += it.taxable; cg += it.cgst; sg += it.sgst; ig += it.igst;
+      });
+    }
+  }
+  d.discAmt = bdAmt;
   var raw = sub + cg + sg + ig;
   var total = t.tax ? Math.round(raw / 100) * 100 : raw;
   d.sub = sub; d.cgst = cg; d.sgst = sg; d.igst = ig; d.round = total - raw; d.total = total; d.inter = inter;
@@ -327,7 +344,7 @@ function outMap(C) {
   var pa = C.d.payments, da = C.d.docs;
   if (OUTM.pa !== pa || OUTM.pl !== pa.length || OUTM.da !== da || OUTM.dl !== da.length || OUTM.v !== CACHE_V) {
     var m = {};
-    pa.forEach(function (x) { if (x.refId && !x.cancelled) m[x.refId] = (m[x.refId] || 0) + x.amount; });
+    pa.forEach(function (x) { if (x.refId && !x.cancelled) m[x.refId] = (m[x.refId] || 0) + x.amount + (x.disc || 0); });
     da.forEach(function (x) { if (x.refId && !x.cancelled && (x.type === 'creditnote' || x.type === 'preturn')) m[x.refId] = (m[x.refId] || 0) + x.total; });
     OUTM = { pa: pa, pl: pa.length, da: da, dl: da.length, v: CACHE_V, map: m };
   }
@@ -352,7 +369,7 @@ function partyBalance(C, p) {
     if (d.type === 'invoice' || d.type === 'debitnote' || d.type === 'pinvoice') b += d.total;
     if (d.type === 'creditnote' || d.type === 'preturn') b -= d.total;
   });
-  C.d.payments.forEach(function (x) { if (x.partyId === p.id && !x.cancelled) b -= x.amount; });
+  C.d.payments.forEach(function (x) { if (x.partyId === p.id && !x.cancelled) b -= x.amount + (x.disc || 0); });
   return b;
 }
 function lowItems(C) { return C.d.products.filter(function (p) { return p.tracked && stockQty(C, p.id) < p.min; }); }
@@ -440,11 +457,13 @@ function addPayment(C, o) {
   if (!o.partyId) return 'Select a party.';
   if (o.refId) {
     var inv = docById(C, o.refId);
-    if (inv && o.amount > outstanding(C, inv) + 0) return 'Amount is more than the ' + money(outstanding(C, inv)) + ' outstanding on ' + inv.no + '.';
+    o.disc = Math.max(0, o.disc || 0);
+    if (inv && o.amount + o.disc > outstanding(C, inv) + 0) return 'Amount plus discount is more than the ' + money(outstanding(C, inv)) + ' outstanding on ' + inv.no + '.';
   }
-  var p = { id: uid(), no: nextNo(C, o.type, o.date), date: o.date, type: o.type, partyId: o.partyId, amount: o.amount, mode: o.mode, refId: o.refId || '', note: o.note || '', by: (user() || {}).name || '' };
+  o.disc = Math.max(0, o.disc || 0);
+  var p = { id: uid(), no: nextNo(C, o.type, o.date), date: o.date, type: o.type, partyId: o.partyId, amount: o.amount, disc: o.disc || 0, mode: o.mode, refId: o.refId || '', note: o.note || '', by: (user() || {}).name || '', at: new Date().toISOString() };
   C.d.payments.push(p);
-  log((o.type === 'receipt' ? 'Receipt ' : 'Payment ') + money(o.amount), p.no);
+  log((o.type === 'receipt' ? 'Receipt ' : 'Payment ') + money(o.amount) + (p.disc ? ' with discount ' + money(p.disc) : ''), p.no);
   return '';
 }
 function addProduct(C, o) {
@@ -537,9 +556,9 @@ function searchBar(extra) { return '<div class="bar"><input id="q" class="inp" s
 function blankItem() { return { pid: '', name: '', hsn: '', unit: '', qty: 1, rate: 0, disc: 0, gst: 18 }; }
 function newDraft(type, over) {
   var C = cur(), t = DT[type];
-  var d = { type: type, partyId: '', date: today(), items: t.items ? [blankItem()] : [], notes: '', wh: C.d.warehouses[0] };
-  if (type === 'invoice' || type === 'pinvoice') d.due = addDays(today(), 15);
-  if (type === 'quotation' || type === 'estimate') d.valid = addDays(today(), 14);
+  var pf = pfOf(C), d = { type: type, partyId: '', date: today(), items: t.items ? [blankItem()] : [], notes: t.side === 's' && t.items ? pf.terms : '', wh: C.d.warehouses[0] };
+  if (type === 'invoice' || type === 'pinvoice') d.due = addDays(today(), pf.dueDays);
+  if (type === 'quotation' || type === 'estimate') d.valid = addDays(today(), pf.validDays);
   if (type === 'salesorder' || type === 'po') d.delivery = addDays(today(), 7);
   return Object.assign(d, over || {});
 }
@@ -558,7 +577,7 @@ function batchCell(C, d, it, i) {
 function itemRow(C, d, it, i) {
   var pur = DT[d.type].side === 'p';
   var plist = C.d.products;
-  return '<tr data-row="' + i + '"><td style="min-width:200px"><select class="inp" data-f="pid" data-i="' + i + '" aria-label="Product"><option value="">Custom item</option>' + opts(plist, it.pid, function (p) { return p.id; }, function (p) { return p.name; }) + '</select><input class="inp" style="margin-top:4px" data-f="name" data-i="' + i + '" value="' + esc(it.name) + '" placeholder="Item name" aria-label="Item name">' + batchCell(C, d, it, i) + serialCell(C, d, it, i) + '</td>' +
+  return '<tr data-row="' + i + '"><td style="min-width:200px"><select class="inp" data-f="pid" data-i="' + i + '" aria-label="Product"><option value="">Custom item</option>' + opts(plist, it.pid, function (p) { return p.id; }, function (p) { return p.name; }) + '</select><input class="inp" style="margin-top:4px" data-f="name" data-i="' + i + '" value="' + esc(it.name) + '" placeholder="Type item name" aria-label="Item name" list="plist" autocomplete="off">' + batchCell(C, d, it, i) + serialCell(C, d, it, i) + '</td>' +
     '<td style="min-width:86px"><input class="inp" data-f="hsn" data-i="' + i + '" value="' + esc(it.hsn) + '" aria-label="HSN or SAC"></td>' +
     '<td style="min-width:80px"><input class="inp num" type="number" min="0" step="any" data-f="qty" data-i="' + i + '" value="' + esc(it.qty) + '" aria-label="Quantity"></td>' +
     '<td style="min-width:104px"><input class="inp num" type="number" min="0" step="any" data-f="rate" data-i="' + i + '" value="' + esc(rs(it.rate)) + '" aria-label="Rate in rupees"></td>' +
@@ -570,7 +589,7 @@ function itemRow(C, d, it, i) {
 function totalsH(C, d) {
   var t = DT[d.type];
   if (!t.items) return '';
-  var h = '<div class="tot"><div><span>Taxable value</span><span class="num">' + money(d.sub) + '</span></div>';
+  var h = '<div class="tot">' + (d.discAmt > 0 ? '<div><span>Bill discount' + (d.bdt === 'amt' ? '' : ' (' + esc(d.bdv) + '%)') + ' (already deducted)</span><span class="num">-' + money(d.discAmt) + '</span></div>' : '') + '<div><span>Taxable value</span><span class="num">' + money(d.sub) + '</span></div>';
   if (taxOn(C, t)) {
     if (d.inter) h += '<div><span>IGST</span><span class="num">' + money(d.igst) + '</span></div>';
     else h += '<div><span>CGST</span><span class="num">' + money(d.cgst) + '</span></div><div><span>SGST</span><span class="num">' + money(d.sgst) + '</span></div>';
@@ -603,9 +622,11 @@ function editorH() {
   if (!t.items) {
     h += '<div class="fg"><label class="fld wide"><span>What does the customer need?</span><textarea data-f="req">' + esc(d.req || '') + '</textarea></label>' + field('Source', '<select data-f="source">' + opts(['Phone', 'Walk-in', 'WhatsApp', 'Email', 'Referral'], d.source || 'Phone') + '</select>') + '</div>';
   } else {
+    h += '<datalist id="plist">' + C.d.products.map(function (p) { return '<option value="' + esc(p.name) + '">'; }).join('') + '</datalist>';
     h += '<div class="tw"><table style="min-width:760px"><thead><tr><th>Item</th><th>HSN/SAC</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Disc %</th><th class="r">GST %</th><th class="r">Taxable</th><th></th></tr></thead><tbody id="rows">' +
       d.items.map(function (it, i) { return itemRow(C, d, it, i); }).join('') + '</tbody></table></div>';
     h += '<div class="bar"><div class="row">' + (C.d.products.some(function (x) { return x.barcode; }) ? scanBox('doc') : '') + btn('addRow', 'Add item', {}, 'sm') + (canWrite('inventory') ? btn('edNewItem', 'New item', {}, 'sm line') : '') + '<span class="note" id="supply">' + esc(supplyNote(C, d)) + '</span></div></div>';
+    h += '<div class="row" style="align-items:flex-end"><label class="fld" style="max-width:190px"><span>Discount on whole bill</span><select data-f="bdt"><option value="pct"' + (d.bdt === 'amt' ? '' : ' selected') + '>Percent (%)</option><option value="amt"' + (d.bdt === 'amt' ? ' selected' : '') + '>Cash amount (Rs)</option></select></label><label class="fld" style="max-width:150px"><span>Value</span><input class="num" type="number" min="0" step="any" data-f="bdv" value="' + esc(d.bdv || '') + '" placeholder="0"></label><span class="note">Taken off before GST. Leave empty for none.</span></div>';
     h += '<div id="totbox">' + totalsH(C, d) + '</div>';
   }
   if (t.side === 's' && t.items) h += shipH(d);
@@ -643,6 +664,7 @@ function docPreview(d) {
     h += totalsH(C, d) + upiBlockH(C, d);
   }
   if (d.notes) h += '<div class="note">' + esc(d.notes) + '</div>';
+  if (pfOf(C).footer) h += '<div class="note" style="text-align:center">' + esc(pfOf(C).footer) + '</div>';
   if (d.irn) h += '<div class="note"><b>IRN</b> ' + esc(d.irn) + (d.ack ? ' · Ack ' + esc(d.ack) : '') + (d.ackDt ? ' · ' + esc(dmy(d.ackDt)) : '') + '</div>';
   if (d.ewb && d.ewb.no) h += '<div class="note"><b>E-way bill</b> ' + esc(d.ewb.no) + (d.ewb.till ? ' · valid till ' + esc(dmy(d.ewb.till)) : '') + '</div>';
   if (d.shortage && d.shortage.length) h += '<div class="hint">Shortage or damage: ' + esc(d.shortage.map(function (s) { return s.name + ' short ' + s.short + ', damaged ' + s.dmg; }).join('; ')) + '</div>';
@@ -650,7 +672,7 @@ function docPreview(d) {
   var links = C.d.docs.filter(function (x) { return x.refId === d.id; });
   if (d.refId) { var par = docById(C, d.refId); if (par) links.unshift(par); }
   if (links.length) h += '<div class="note">Linked: ' + links.map(function (x) { return esc(DT[x.type].label + ' ' + x.no); }).join(', ') + '</div>';
-  h += '<div class="note">' + (d.by ? 'Created by <b>' + esc(d.by) + '</b>' + (d.at ? ' on ' + new Date(d.at).toLocaleString('en-IN') : '') : '') + (d.editedBy ? ' · Edited by <b>' + esc(d.editedBy) + '</b>' : '') + (d.cancelled ? ' · Cancelled ' + dmy(d.cancelledAt) : '') + '</div>';
+  h += '<div class="note">' + (d.by ? 'Created by <b>' + esc(d.by) + '</b>' + (d.at ? ' on ' + tmStr(d.at) : '') : '') + (d.editedBy ? ' · Edited by <b>' + esc(d.editedBy) + '</b>' + (d.editedAt ? ' on ' + tmStr(d.editedAt) : '') : '') + (d.cancelled ? ' · Cancelled ' + dmy(d.cancelledAt) : '') + '</div>';
   if (!d.cancelled) {
     var mod = t.side === 's' ? 'sales' : 'purchases', ac = '';
     if (d.type === 'invoice' && outstanding(C, d) > 0 && canWrite('sales', 'receipt')) ac += btn('newPay', 'Receive payment (' + money(outstanding(C, d)) + ' due)', { type: 'receipt', ref: d.id }, 'pri');
@@ -699,28 +721,28 @@ function vDashboard() {
   var low = lowItems(C), cb = cashBank(C);
   var trend = prevAmt ? Math.round(100 * (monAmt - prevAmt) / prevAmt) : null;
   var first = String((u && u.name) || '').split(' ')[0] || 'there';
-  var h = '<div class="hm-hero"><div class="hm-hl"><div class="hm-hi">' + hmGreet() + ', ' + esc(first) + '</div><h1>' + esc(C.name) + '</h1><div class="hm-sub">' + dmy(t) + ' · FY ' + fyLabel(t) + ' · ' + esc(role()) + '</div>' +
+  var h = '<div class="hm-hero"><div class="hm-hl' + '">' + clockH() + '<div class="hm-hi">' + hmGreet() + ', ' + esc(first) + '</div><h1>' + esc(C.name) + '</h1><div class="hm-sub">FY ' + fyLabel(t) + ' · ' + esc(role()) + '</div>' +
     '<div class="hm-big"><span class="hm-bl">This month</span><span class="hm-bv">' + money(monAmt) + '</span><span class="hm-bn">' + mon.length + ' invoice(s)' + (trend === null ? '' : ' · <b class="' + (trend >= 0 ? 'hm-up' : 'hm-dn') + '">' + (trend >= 0 ? '▲ ' : '▼ ') + Math.abs(trend) + '%</b> vs last month') + '</span></div>' +
     '<div class="hm-btns">' + (canWrite('quick') ? btn('nav', '+ New Bill', { v: 'quick' }, 'hm-b1') : '') + (canWrite('sales', 'receipt') ? btn('newPay', 'Money received', { type: 'receipt' }, 'hm-b2') : '') + (canWrite('accounting') ? btn('goExp', 'Add expense', {}, 'hm-b2') : '') + '</div></div>' +
     '<div class="hm-hr"><div class="hm-cl">Sales, last 14 days</div>' + hmSpark(C, 14) + '<div class="hm-ax"><span>' + dmy(addDays(t, -13)) + '</span><span>Today</span></div></div></div>';
-  h += homeActions(C, true);
+  h += homeActions(C, true) + hmSearchH(C);
   h += '<div class="hm-kpis">' +
     '<div class="hm-k k1"><div class="l">Receivables</div><div class="v">' + money(recv) + '</div><div class="n' + (over.length ? ' w' : '') + '">' + (over.length ? money(overAmt) + ' overdue' : 'Nothing overdue') + '</div></div>' +
     '<div class="hm-k k2"><div class="l">Payables</div><div class="v">' + money(pay) + '</div><div class="n">Owed to suppliers</div></div>' +
     '<div class="hm-k k3"><div class="l">Cash and bank</div><div class="v">' + money(cb.cash + cb.bank) + '</div><div class="n">Cash ' + money(cb.cash) + ' · Bank ' + money(cb.bank) + '</div></div>' +
-    '<div class="hm-k k4"><div class="l">Stock value</div><div class="v">' + money(stockVal) + '</div><div class="n' + (low.length ? ' w' : '') + '">' + low.length + ' item(s) below minimum</div></div></div>';
+    (stockOn(C) ? '<div class="hm-k k4"><div class="l">Stock value</div><div class="v">' + money(stockVal) + '</div><div class="n' + (low.length ? ' w' : '') + '">' + low.length + ' item(s) below minimum</div></div></div>' : '<div class="hm-k k4"><div class="l">Unpaid invoices</div><div class="v">' + inv.filter(function (x) { return outstanding(C, x) > 0; }).length + '</div><div class="n">' + (over.length ? over.length + ' overdue' : 'None overdue') + '</div></div></div>');
   var stages = ['enquiry', 'estimate', 'quotation', 'proforma', 'salesorder', 'challan'];
   var cnt = stages.map(function (s) { var n = d.docs.filter(function (x) { return x.type === s && !x.cancelled && (x.status === 'Open' || x.status === 'Accepted' || x.status === 'Posted'); }).length; return [DT[s].label, n, s, 'pipe']; });
   cnt.push(['Unpaid invoices', inv.filter(function (x) { return outstanding(C, x) > 0; }).length, 'invoice', 'unpaid']);
   h += '<div class="card"><h2>Sales pipeline</h2><div class="hm-pipe">' + cnt.map(function (c) { return '<div class="hm-st clk' + (c[1] ? ' on' : '') + '" tabindex="0" data-act="goDoc" data-t="' + c[2] + '" data-f="' + c[3] + '" title="Click to open"><b>' + c[1] + '</b><span>' + esc(c[0]) + '</span></div>'; }).join('') + '</div></div>';
-  h += '<div class="hm-2"><div>' + reportCard(C) + '</div><div>' + dayBookH(C) + '</div></div>';
-  var recent = d.docs.slice().sort(function (a, b) { return (b.date + b.no).localeCompare(a.date + a.no); }).slice(0, 8);
+  h += dayBookH(C);
+  var recentAll = d.docs.slice().sort(function (a, b) { return (b.date + b.no).localeCompare(a.date + a.no); }), recent = recentAll.slice(0, S.hmMore && S.hmMore.r ? 25 : 5);
   h += '<div class="cols"><div class="card" style="flex:2 1 460px"><h2>Recent documents</h2>' + table([['Document'], ['Date'], ['Party'], ['Amount', 'r'], ['Status']], recent.map(function (x) {
     return ['<b>' + esc(x.no) + '</b><div class="note">' + esc(DT[x.type].label) + '</div>', dmy(x.date), esc(partyName(C, x.partyId)), DT[x.type].items ? money(x.total) : '-', statusChip(statusOf(C, x))];
-  }), 'No documents yet.', null, recent.map(function (x) { return ['view', x.id]; })) + '</div>' +
-    '<div style="flex:1 1 340px;display:flex;flex-direction:column;gap:16px"><div class="card"><div class="bar"><h2>Low stock</h2>' + (low.length && canWrite('purchases', 'po') ? btn('poFromLow', 'Create purchase order', {}, 'sm') : '') + '</div>' +
-    table([['Item'], ['In stock', 'r'], ['Minimum', 'r']], low.map(function (p) { return [esc(p.name), '<span class="warn-t">' + qtyF(stockQty(C, p.id)) + '</span>', qtyF(p.min)]; }), 'All items are above minimum.') + '</div>' +
-    '<div class="card"><h2>Overdue invoices</h2>' + table([['Invoice'], ['Customer'], ['Balance', 'r']], over.map(function (x) { return ['<b>' + esc(x.no) + '</b><div class="note warn-t">Due ' + dmy(x.due) + '</div>', esc(partyName(C, x.partyId)), money(outstanding(C, x))]; }), 'No overdue invoices.', null, over.map(function (x) { return ['view', x.id]; })) + '</div></div></div>';
+  }), 'No documents yet.', null, recent.map(function (x) { return ['view', x.id]; })) + hmMoreBtn('r', recentAll.length, 5, 25) + '</div>' +
+    '<div style="flex:1 1 340px;display:flex;flex-direction:column;gap:16px">' + (stockOn(C) && pfOf(C).lowHome !== false ? '<div class="card"><div class="bar"><h2>Low stock</h2>' + (low.length && canWrite('purchases', 'po') ? btn('poFromLow', 'Create purchase order', {}, 'sm') : '') + '</div>' +
+    table([['Item'], ['In stock', 'r'], ['Minimum', 'r']], low.map(function (p) { return [esc(p.name), '<span class="warn-t">' + qtyF(stockQty(C, p.id)) + '</span>', qtyF(p.min)]; }), 'All items are above minimum.') + '</div>' : '') +
+    '<div class="card"><h2>Overdue invoices</h2>' + table([['Invoice'], ['Customer'], ['Balance', 'r']], over.slice(0, S.hmMore && S.hmMore.o ? 25 : 5).map(function (x) { return ['<b>' + esc(x.no) + '</b><div class="note warn-t">Due ' + dmy(x.due) + '</div>', esc(partyName(C, x.partyId)), money(outstanding(C, x))]; }), 'No overdue invoices.', null, over.slice(0, S.hmMore && S.hmMore.o ? 25 : 5).map(function (x) { return ['view', x.id]; })) + hmMoreBtn('o', over.length, 5, 25) + '</div></div></div>';
   return h;
 }
 
@@ -846,7 +868,7 @@ function dayBookH(C) {
   var dt = S.dbDate || today(), rows = dayBookRows(C, dt), live = rows.filter(function (r) { return !r.cancelled; });
   function sm(k) { return sumBy(live.filter(function (r) { return r.k === k; }), function (r) { return r.amt; }); }
   var recvd = sm('receipt') + sm('income'), paid = sm('payment') + sm('expense');
-  var h = '<div class="card"><div class="bar"><h2>Day Book</h2><div class="row">' + btn('dbDay', 'Previous day', { n: -1 }, 'sm line') + '<input type="date" class="inp" style="max-width:160px" data-chg="dbDate" value="' + esc(dt) + '" aria-label="Day Book date">' + btn('dbDay', 'Next day', { n: 1 }, 'sm line') + (dt !== today() ? btn('dbDay', 'Today', { n: 0 }, 'sm') : '') + '</div></div>';
+  var h = '<div class="card"><div class="bar"><h2>Day Book</h2><div class="row">' + btn('dbDay', 'Previous day', { n: -1 }, 'sm line') + '<input type="date" class="inp" style="max-width:160px" data-chg="dbDate" value="' + esc(dt) + '" aria-label="Day Book date">' + btn('dbDay', 'Next day', { n: 1 }, 'sm line') + (dt !== today() ? btn('dbDay', 'Today', { n: 0 }, 'sm') : '') + btn('dlDayBook', 'Detail PDF with graph', { fmt: 'pdf' }, 'sm pri') + btn('dlDayBook', 'Excel', { fmt: 'xlsx' }, 'sm') + '</div></div>';
   h += '<div class="grid">' + kpi('Sales', money(sm('invoice') - sm('creditnote')), 'Invoices less returns') + kpi('Purchases', money(sm('pinvoice') - sm('preturn')), 'Bills less returns') + kpi('Money received', money(recvd), 'Receipts and income') + kpi('Money paid', money(paid), 'Payments and expenses') + '</div>';
   var order = { invoice: 1, creditnote: 2, debitnote: 3, pinvoice: 4, preturn: 5, receipt: 6, payment: 7, income: 8, expense: 9 };
   rows.sort(function (a, b) { return (order[a.k] - order[b.k]) || String(a.no).localeCompare(String(b.no)); });
@@ -917,7 +939,7 @@ function homeActions(C, noTiles) {
 /* quick bill: tap items, type to find items, add a new item without leaving the bill */
 function qbState() { if (!S.qb) S.qb = { partyId: '', cart: [], mode: 'Cash', paid: null, q: '', grp: 'top', hi: 0 }; if (!S.qb.grp) S.qb.grp = 'top'; return S.qb; }
 function qbWalkin(C) { var p = C.d.parties.find(function (x) { return x.type === 'customer' && x.name === 'Walk-in Customer'; }); return p || addParty(C, { type: 'customer', name: 'Walk-in Customer' }); }
-function qbCalc(C) { var s = qbState(), d = { type: 'invoice', partyId: s.partyId, items: s.cart }; calc(C, d); return d; }
+function qbCalc(C) { var s = qbState(), d = { type: 'invoice', partyId: s.partyId, items: s.cart, bdt: s.bdt, bdv: s.bdv }; calc(C, d); return d; }
 function soldCount(C) {
   var m = {}; C.d.docs.forEach(function (d) { if (d.type !== 'invoice' || d.cancelled || d.date < addDays(today(), -120)) return; d.items.forEach(function (it) { if (it.pid) m[it.pid] = (m[it.pid] || 0) + 1; }); });
   return m;
@@ -979,7 +1001,7 @@ function qbCartH(C) {
 }
 function qbTotH(C) {
   var s = qbState(), d = qbCalc(C);
-  var h = '<div class="tot" style="width:100%;margin:0"><div><span>Taxable value</span><span class="num">' + money(d.sub) + '</span></div>';
+  var h = '<div class="tot" style="width:100%;margin:0">' + (d.discAmt > 0 ? '<div><span>Discount (already deducted)</span><span class="num">-' + money(d.discAmt) + '</span></div>' : '') + '<div><span>Taxable value</span><span class="num">' + money(d.sub) + '</span></div>';
   if (C.scheme === 'regular') h += '<div><span>GST added</span><span class="num">' + money(d.cgst + d.sgst + d.igst) + '</span></div>';
   return h + '<div class="g"><span>Total</span><span class="num">' + money(d.total) + '</span></div></div>';
 }
@@ -1000,6 +1022,7 @@ function vQuick() {
   h += '<div class="card" style="flex:1 1 380px"><h2>Bill</h2><div id="cart">' + qbCartH(C) + '</div>' +
     '<label class="fld"><span>Customer</span><select data-chg="qbParty"><option value="">Walk-in customer</option>' + opts(custs, s.partyId, function (p) { return p.id; }, function (p) { return p.name; }) + '</select></label>' +
     (canWrite('parties') ? '<div>' + btn('newParty', 'New customer', { side: 'customer' }, 'sm line') + '</div>' : '') +
+    '<div class="row" style="align-items:flex-end"><label class="fld" style="max-width:150px"><span>Discount</span><select data-qbf="bdt"><option value="pct"' + (s.bdt === 'amt' ? '' : ' selected') + '>Percent (%)</option><option value="amt"' + (s.bdt === 'amt' ? ' selected' : '') + '>Cash (Rs)</option></select></label><label class="fld" style="max-width:120px"><span>Value</span><input class="num" type="number" min="0" step="any" data-qbf="bdv" value="' + esc(s.bdv || '') + '" placeholder="0"></label></div>' +
     '<div id="qbtot">' + qbTotH(C) + '</div>' +
     '<div class="fg">' + field('Payment mode', '<select data-chg="qbMode">' + opts(['Cash', 'UPI', 'Card', 'Bank'], s.mode) + '</select>') + field('Amount received', '<input id="qbpaid" class="num" type="number" min="0" step="any" data-qbf="paid" aria-label="Amount received" value="' + (s.paid === null ? rs(d.total) : esc(s.paid)) + '">') + '</div>' +
     '<div class="note">Received less than the total? The rest stays as balance due. Pick a customer for part payment.</div>' +
@@ -1024,7 +1047,7 @@ function cashBank(C) {
 /* ---------- inventory ---------- */
 function vInventory() {
   var C = cur(), w = canWrite('inventory');
-  var tabs = visTabs(C, [['products', 'Products'], ['adjust', 'Stock In/Out and Adjustments'], ['warehouses', 'Warehouses'], ['ledger', 'Stock Ledger'], ['valuation', 'Valuation']].concat(C.d.products.some(function (p) { return p.batch; }) ? [['batches', 'Batches and Expiry']] : []).concat(C.d.products.some(function (p) { return p.serial; }) ? [['serials', 'Serial Numbers']] : []), ['products', 'adjust', 'valuation', 'batches', 'serials']);
+  var tabs = visTabs(C, [['products', 'Products'], ['adjust', 'Stock In/Out and Adjustments'], ['warehouses', 'Warehouses'], ['transfers', 'Godown Transfer'], ['ledger', 'Stock Ledger'], ['valuation', 'Valuation']].concat(C.d.products.some(function (p) { return p.batch; }) ? [['batches', 'Batches and Expiry']] : []).concat(C.d.products.some(function (p) { return p.serial; }) ? [['serials', 'Serial Numbers']] : []), ['products', 'adjust', 'valuation', 'batches', 'serials']);
   var tab = pickTab(tabs, S.tab.inventory, 'products');
   var h = top('Items and Stock', 'Stock changes only through approved documents and adjustments', '') + '<div class="card">' + tabsH(tabs, tab, 'tab');
   if (tab === 'products') {
@@ -1060,11 +1083,13 @@ function vInventory() {
     h += table([['Item']].concat(C.d.warehouses.map(function (x) { return [x, 'r']; })).concat([['Total', 'r']]), tr.map(function (p) {
       return ['<b>' + esc(p.name) + '</b>'].concat(C.d.warehouses.map(function (x) { return qtyF(stockQty(C, p.id, x)); })).concat([qtyF(stockQty(C, p.id))]);
     }), 'No stocked products yet.');
+  } else if (tab === 'transfers') {
+    h += trTabH(C);
   } else if (tab === 'ledger') {
     var tp = C.d.products.filter(function (p) { return p.tracked; }); var sel = S.tab.ledgerP || (tp[0] && tp[0].id);
     h += '<label class="fld" style="max-width:320px"><span>Product</span><select data-chg="ledgerP">' + opts(tp, sel, function (p) { return p.id; }, function (p) { return p.name; }) + '</select></label>';
     var bal = 0, mvs = C.d.moves.filter(function (m) { return m.pid === sel; }).sort(function (a, b) { return a.date.localeCompare(b.date); });
-    h += table([['Date'], ['Type'], ['Reference'], ['Warehouse'], ['In', 'r'], ['Out', 'r'], ['Balance', 'r']], mvs.map(function (m) { bal += m.qty; return [dmy(m.date), esc(m.type), esc(m.note), esc(m.wh), m.qty > 0 ? qtyF(m.qty) : '', m.qty < 0 ? qtyF(-m.qty) : '', qtyF(bal)]; }), 'No stock movement for this product.');
+    h += table([['Date'], ['Type'], ['Reference'], ['Warehouse'], ['In', 'r'], ['Out', 'r'], ['Balance', 'r']], mvs.map(function (m) { bal += m.qty; return [dmy(m.date), esc(m.type), esc(m.note), esc(m.wh), m.qty > 0 ? qtyF(m.qty) : '', m.qty < 0 ? qtyF(-m.qty) : '', qtyF(bal)]; }), 'No stock movement for this product.', null, mvs.map(function (m) { return mvAct(C, m); }));
   } else {
     var tot = 0;
     var rows = C.d.products.filter(function (p) { return p.tracked; }).map(function (p) { var q = stockQty(C, p.id), v = Math.max(0, q) * p.cost; tot += v; return ['<b>' + esc(p.name) + '</b>', qtyF(q) + ' ' + esc(p.unit), money(p.cost), money(v)]; });
@@ -1157,7 +1182,7 @@ function ledgerH(p) {
     var up = d.type === 'invoice' || d.type === 'debitnote' || d.type === 'pinvoice';
     ev.push({ date: d.date, t: DT[d.type].label + ' ' + d.no, up: up, amt: d.total, can: !!d.cancelled, act: 'view', id: d.id });
   });
-  C.d.payments.forEach(function (x) { if (x.partyId === p.id) ev.push({ date: x.date, t: (x.type === 'receipt' ? 'Receipt ' : 'Payment ') + x.no + ' (' + x.mode + ')', up: false, amt: x.amount, can: !!x.cancelled, act: 'viewPay', id: x.id }); });
+  C.d.payments.forEach(function (x) { if (x.partyId === p.id) ev.push({ date: x.date, t: (x.type === 'receipt' ? 'Receipt ' : 'Payment ') + x.no + ' (' + x.mode + ')' + (x.disc ? ' incl. discount ' + money(x.disc) : ''), up: false, amt: x.amount + (x.disc || 0), can: !!x.cancelled, act: 'viewPay', id: x.id }); });
   ev.sort(function (a, b) { return a.date.localeCompare(b.date); });
   var bal = 0;
   var rows = ev.map(function (e) {
@@ -1174,13 +1199,15 @@ function ledgerH(p) {
 /* ---------- settings ---------- */
 function vSettings() {
   var C = cur(), tab = S.tab.settings || 'company';
-  var h = top('Settings', 'Company, tax, users and backup', '') + '<div class="card">' + tabsH([['company', 'Company and Tax'], ['series', 'Number Series'], ['users', 'Users and Roles'], ['backup', 'Backup'], ['bin', 'Recycle Bin'], ['audit', 'Audit Log']], tab, 'tab');
+  var h = top('Settings', 'Company, tax, users and backup', '') + '<div class="card">' + tabsH([['company', 'Company and Tax'], ['series', 'Number Series'], ['prefs', 'Preferences'], ['users', 'Users and Roles'], ['backup', 'Backup'], ['bin', 'Recycle Bin'], ['audit', 'Audit Log']], tab, 'tab');
   if (tab === 'company') {
     h += '<form data-submit="saveCompany"><div class="fg">' + field('Company name', '<input name="name" required value="' + esc(C.name) + '">', 'wide') + field('GSTIN', '<input name="gstin" maxlength="15" value="' + esc(C.gstin) + '">') + field('State', '<select name="state">' + opts(STATES, C.state) + '</select>') +
       field('Tax scheme (locked)', '<select name="scheme_view" disabled title="Tax scheme cannot be changed after the company is created">' + opts([['regular', 'Regular GST'], ['composition', 'Composition (Bill of Supply)'], ['notax', 'No tax (Cash Bill)']], C.scheme, function (x) { return x[0]; }, function (x) { return x[1]; }) + '</select>') + field('Phone', '<input name="phone" value="' + esc(C.phone) + '">') + field('Email', '<input name="email" value="' + esc(C.email) + '">') + field('Address', '<input name="address" value="' + esc(C.address) + '">', 'wide') + field('City', '<input name="city" maxlength="50" value="' + esc(C.city || '') + '">') + field('PIN code', '<input name="pin" maxlength="6" inputmode="numeric" value="' + esc(C.pin || '') + '">') + '<label class="ck wide"><input type="checkbox" name="einv"' + (C.einv ? ' checked' : '') + '> E-invoicing applies to my business (yearly turnover above 5 crore)</label>' +
-      field('Business type', '<select name="biz">' + opts(Object.keys(BIZ), C.bizType || 'other', null, function (k) { return BIZ[k].label; }) + '</select>') + field('Screen mode', '<select name="mode">' + opts([['simple', 'Simple (fewer screens)'], ['full', 'Full (all document types)']], C.mode || 'full', function (x) { return x[0]; }, function (x) { return x[1]; }) + '</select>') + field('Bank name', '<input name="bname" value="' + esc(C.bank.name) + '">') + field('Account number', '<input name="bacc" value="' + esc(C.bank.acc) + '">') + field('IFSC', '<input name="bifsc" value="' + esc(C.bank.ifsc) + '">') + field('UPI ID', '<input name="bupi" value="' + esc(C.bank.upi) + '">') +
+      field('Business type', '<select name="biz">' + opts(Object.keys(BIZ), C.bizType || 'other', null, function (k) { return BIZ[k].label; }) + '</select><div class="note" id="bizHint">' + esc(bizNote(C.bizType || 'other')) + '</div>') + field('Screen mode', '<select name="mode">' + opts([['simple', 'Simple (fewer screens)'], ['full', 'Full (all document types)']], C.mode || 'full', function (x) { return x[0]; }, function (x) { return x[1]; }) + '</select>') + field('Bank name', '<input name="bname" value="' + esc(C.bank.name) + '">') + field('Account number', '<input name="bacc" value="' + esc(C.bank.acc) + '">') + field('IFSC', '<input name="bifsc" value="' + esc(C.bank.ifsc) + '">') + field('UPI ID', '<input name="bupi" value="' + esc(C.bank.upi) + '">') +
       field('Copy 1 name on invoice', '<input name="cp0" maxlength="40" value="' + esc(copyNames(C)[0]) + '">') + field('Copy 2 name', '<input name="cp1" maxlength="40" value="' + esc(copyNames(C)[1]) + '">') + field('Copy 3 name', '<input name="cp2" maxlength="40" value="' + esc(copyNames(C)[2]) + '">') +
       '</div><label class="ck" style="margin-top:10px"><input type="checkbox" name="popup"' + (C.dailyPopup === false ? '' : ' checked') + '> Show Today\'s report popup once a day when I open the app</label>' + '<div class="note">Copy names appear on printed and PDF invoices, for example Original for Recipient, Duplicate for Transporter, Triplicate for Supplier. Change them to anything you like.</div><div class="note"><b>Tax scheme is locked.</b> It cannot be changed after the company is created, because old bills would no longer match. If your tax scheme changes, create a new company (Switch company, then Set up your business). Old company data stays safe.</div>' + '<div class="row" style="margin-top:14px"><button class="btn pri" type="submit">Save settings</button></div></form>';
+  } else if (tab === 'prefs') {
+    h += prefsH(C);
   } else if (tab === 'series') {
     var types = Object.keys(DT).concat(['receipt', 'payment']);
     h += '<form data-submit="saveSeries"><div class="fg">' + types.map(function (t) { var pre = (C.d.series[t] && C.d.series[t].prefix) || (t === 'receipt' ? 'RCT' : t === 'payment' ? 'PAY' : DT[t].pre); return field((t === 'receipt' ? 'Receipt' : t === 'payment' ? 'Supplier Payment' : DT[t].label) + ' prefix', '<input name="s_' + t + '" value="' + esc(pre) + '" maxlength="8" required>'); }).join('') + '</div><div class="note" style="margin-top:8px">Numbers restart each financial year, for example INV/' + fyLabel(today()) + '/0001.</div><div class="row" style="margin-top:14px"><button class="btn pri" type="submit">Save number series</button></div></form>';
@@ -1192,14 +1219,15 @@ function vSettings() {
     h += '<form data-submit="addUser" class="card" style="background:var(--bg)"><h2>Add a user</h2><div class="fg">' + field('Name', '<input name="name" required>') + field('Email', '<input name="email" type="email" required>') + field('Password (new users, 6 or more characters)', '<input name="pass" type="password" minlength="6" autocomplete="new-password">') + field('Role', '<select name="role">' + opts(ROLES, 'cashier') + '</select>') + '</div><div><button class="btn pri" type="submit">Add user</button></div></form>' +
       '<div class="note">Owner: everything. Manager: all modules except Settings. Cashier: sales invoices, receipts, customers. Accountant: purchases, accounting, reports, inventory view.</div>' + (role() === 'owner' ? pinCardH(C) + limitsCardH(C) : '');
   } else if (tab === 'backup') {
+    var abc = role() === 'owner' ? abCardH() : '';
     var lb = C.lastBackup ? 'Last backup: ' + dmy(C.lastBackup) : 'No backup downloaded yet';
-    h += '<div class="hint">Your data is saved in this browser on this device only. If you clear browser data or lose the device, it is gone. Download a backup file often and keep it safe (for example in Google Drive or WhatsApp to yourself). ' + esc(lb) + '.</div><div class="row">' + btn('dlBackup', 'Download backup file', {}, 'pri') + btn('copyBackup', 'Copy backup text', {}, 'line') + '</div>' +
+    h += abc + '<div class="hint">Your data is saved in this browser on this device only. If you clear browser data or lose the device, it is gone. Download a backup file often and keep it safe (for example in Google Drive or WhatsApp to yourself). ' + esc(lb) + '.</div><div class="row">' + btn('dlBackup', 'Download backup file', {}, 'pri') + btn('copyBackup', 'Copy backup text', {}, 'line') + '</div>' +
       '<form data-submit="restore" class="card" style="background:var(--bg)"><h2>Restore from backup</h2><label class="fld"><span>Choose a backup file</span><input type="file" accept=".json,application/json" data-chg="backupFile"></label><label class="fld"><span>Or paste backup text</span><textarea name="json" required></textarea></label><div><button class="btn warn" type="submit">Restore</button></div></form>' +
       '<div class="card" style="background:var(--bg)"><h2>Reset</h2><div class="note">Clears all documents, parties and products of this company.</div><div class="row">' + (S.confirmReset ? btn('doReset', 'Yes, erase this company data', {}, 'warn') + btn('cancelReset', 'Keep data', {}, 'line') : btn('askReset', 'Reset company data', {}, 'warn')) + '</div></div><div class="note">Bill DNA version ' + VERSION + '</div>';
   } else if (tab === 'bin') {
     h += binTab(['expense', 'journal', 'party', 'product']);
   } else {
-    h += table([['Time'], ['User'], ['Action'], ['Reference']], C.d.audit.slice(0, 120).map(function (a) { return [new Date(a.ts).toLocaleString('en-IN'), esc(a.user), esc(a.act), esc(a.ref)]; }), 'No activity yet.');
+    h += '<div class="bar"><div class="note">' + C.d.audit.length + ' entries recorded. The download has all of them.</div><div class="row">' + btn('dlAudit', 'PDF', { fmt: 'pdf' }, 'sm pri') + btn('dlAudit', 'Excel', { fmt: 'xlsx' }, 'sm') + btn('dlAudit', 'CSV', { fmt: 'csv' }, 'sm') + '</div></div>' + table([['Time'], ['User'], ['Action'], ['Reference']], C.d.audit.slice(0, 300).map(function (a) { return [tmStr(a.ts), esc(a.user), esc(a.act), esc(a.ref)]; }), 'No activity yet.') + (C.d.audit.length > 300 ? '<div class="note">Showing the latest 300. Download for the full log.</div>' : '');
   }
   return h + '</div>';
 }
@@ -1326,6 +1354,9 @@ function vGst() {
     var oi = sumF(C.d.expenses.filter(function (e) { return e.kind === 'income' && e.date >= r.from && e.date <= r.to; }), function (e) { return e.amount; });
     var exp = {}; C.d.expenses.forEach(function (e) { if (e.kind === 'expense' && e.date >= r.from && e.date <= r.to) exp[e.cat] = (exp[e.cat] || 0) + e.amount; });
     var te = sumF(Object.keys(exp), function (k) { return exp[k]; });
+    var dAll = sumF(C.d.payments.filter(function (x) { return x.type === 'receipt' && !x.cancelled && x.date >= r.from && x.date <= r.to; }), function (x) { return x.disc || 0; });
+    var dRec = sumF(C.d.payments.filter(function (x) { return x.type === 'payment' && !x.cancelled && x.date >= r.from && x.date <= r.to; }), function (x) { return x.disc || 0; });
+    oi += dRec; if (dAll) { exp['Discount allowed to customers'] = (exp['Discount allowed to customers'] || 0) + dAll; te += dAll; }
     var rowsPl = [['Net sales (excluding tax)', money(ns)], ['Cost of goods sold', money(cogs)], ['<b>Gross profit</b>', '<b>' + money(gp) + '</b>'], ['Other income', money(oi)]].concat(Object.keys(exp).map(function (k) { return ['Expense: ' + esc(k), money(exp[k])]; }));
     h += table([['Particulars'], ['Amount', 'r']], rowsPl, '', ['Net profit', money(gp + oi - te)]) + '<div class="note">Cost of goods sold uses the average cost at the time of sale.</div>';
   } else if (tab === 'stock') {
@@ -1736,7 +1767,7 @@ function editPostedCheck(C, d, old) {
 function payEditForm(x) {
   var C = cur(), pr = partyById(C, x.partyId) || {}, inv = x.refId ? docById(C, x.refId) : null;
   return '<div class="mh"><h2>Edit ' + esc(x.no) + '</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="note">' + (x.type === 'receipt' ? 'Received from ' : 'Paid to ') + '<b>' + esc(pr.name || '-') + '</b> · ' + (inv ? 'against ' + esc(inv.no) : 'on account') + '</div><form data-submit="saveEditPay"><input type="hidden" name="id" value="' + x.id + '"><div class="fg">' +
-    field('Amount', '<input name="amt" type="number" min="0.01" step="any" required value="' + rs(x.amount) + '">') + field('Mode', '<select name="mode">' + opts(['Cash', 'UPI', 'Bank', 'Card', 'Cheque'], x.mode) + '</select>') + field('Date', '<input name="date" type="date" required value="' + esc(x.date) + '">') + field('Note', '<input name="note" value="' + esc(x.note || '') + '">') +
+    field('Amount', '<input name="amt" type="number" min="0.01" step="any" required value="' + rs(x.amount) + '">') + field('Discount given (Rs)', '<input name="disc" type="number" min="0" step="any" value="' + (x.disc ? rs(x.disc) : '') + '">') + field('Mode', '<select name="mode">' + opts(['Cash', 'UPI', 'Bank', 'Card', 'Cheque'], x.mode) + '</select>') + field('Date', '<input name="date" type="date" required value="' + esc(x.date) + '">') + field('Note', '<input name="note" value="' + esc(x.note || '') + '">') +
     '</div>' + (x.by ? '<div class="note" style="margin-top:8px">Entered by ' + esc(x.by) + (x.editedBy ? ' · last edited by ' + esc(x.editedBy) : '') + '</div>' : '') + '<div style="margin-top:12px"><button class="btn pri" type="submit">Save</button></div></form>';
 }
 
@@ -1831,8 +1862,8 @@ function bindExtra(A) {
     var C = cur(), x = C.d.payments.find(function (p) { return p.id === fd.get('id'); }); if (!x) return;
     var amt = P(fd.get('amt')); if (!(amt > 0)) { toast('Enter an amount above zero.', true); return; }
     var inv = x.refId ? docById(C, x.refId) : null;
-    if (inv && amt > outstanding(C, inv) + x.amount) { toast('Amount is more than the ' + money(outstanding(C, inv) + x.amount) + ' this invoice can take.', true); return; }
-    x.amount = amt; x.mode = fd.get('mode'); x.date = fd.get('date'); x.note = String(fd.get('note') || ''); x.editedBy = byName();
+    var dsc = P(fd.get('disc')); if (inv && amt + dsc > outstanding(C, inv) + x.amount + (x.disc || 0)) { toast('Amount plus discount is more than the ' + money(outstanding(C, inv) + x.amount + (x.disc || 0)) + ' this invoice can take.', true); return; }
+    x.disc = dsc; x.amount = amt; x.mode = fd.get('mode'); x.date = fd.get('date'); x.note = String(fd.get('note') || ''); x.editedBy = byName();
     log('Edited ' + (x.type === 'receipt' ? 'receipt' : 'payment'), x.no); closeModal(); afterChange(); modal(receiptH(x)); toast('Saved.');
   };
   A.editDoc = function (d) {
@@ -2227,7 +2258,9 @@ function bindGov(A) {
   };
 }
 /* ---------- delete PIN: asked before delete, cancel, reset and restore ---------- */
-var PIN_ACTS = ['doCancel', 'doCancelPay', 'doDelExp', 'doDelJrn', 'doDelParty', 'doDelProd', 'doBinPurge', 'doBinEmpty', 'doReset', 'doRestore', 'doRmUser'];
+var PIN_ACTS = ['doCancel', 'doCancelPay', 'doDelExp', 'doDelJrn', 'doDelParty', 'doDelProd', 'doBinPurge', 'doBinEmpty', 'doReset', 'doRestore', 'doRmUser', 'editDoc', 'editPay'];
+var PIN_REQ = ['doCancel', 'doCancelPay', 'editDoc', 'editPay'];
+function pinReq() { return window.BILLDNA_PIN_REQUIRED === true; }
 function pinOn(C) { return !!(C && C.delPin && C.delPin.h); }
 function pinHash(C, pin) { return pwHash(String(pin), 'dp' + C.id); }
 function pinLocked() { return S.pinLock && Date.now() < S.pinLock; }
@@ -2257,9 +2290,15 @@ function pinTry(C, p) {
 function bindPin(A) {
   PIN_ACTS.forEach(function (n) {
     var o = A[n]; if (!o) return;
-    A[n] = function (d, t) { var C = cur(); if (!pinOn(C)) return o(d, t); askPin(function () { o(d, t); }); };
+    A[n] = function (d, t) { var C = cur(); if (!pinOn(C)) { if (pinReq() && PIN_REQ.indexOf(n) >= 0) return needPinSetup(function () { o(d, t); }); return o(d, t); } askPin(function () { o(d, t); }); };
   });
   A.pinCheck = function (fd) { var C = cur(); if (!pinOn(C)) { closeModal(); return; } if (!pinTry(C, fd.get('pin'))) return; var f = S.pinNext; S.pinNext = null; closeModal(); if (f) f(); };
+  A.pinFirst = function (fd) {
+    if (!ownerOnly()) return; var C = cur(), p = String(fd.get('pin') || '').trim();
+    if (!/^\d{4}$/.test(p)) { toast('PIN must be exactly 4 digits.', true); return; }
+    if (p !== String(fd.get('pin2') || '').trim()) { toast('The two PINs do not match.', true); return; }
+    C.delPin = { h: pinHash(C, p), at: new Date().toISOString() }; log('Delete PIN set', ''); save(); var f = S.pinNext2; S.pinNext2 = null; closeModal(); toast('PIN saved.'); if (f) f();
+  };
   A.pinSet = function (fd) {
     if (!ownerOnly()) return; var C = cur(), p = String(fd.get('pin') || '').trim();
     if (pinOn(C) && !pinTry(C, fd.get('cur'))) return;
@@ -4737,7 +4776,7 @@ function rcptHtml(C, d, w) {
   (d.items || []).forEach(function (it) {
     h += '<div>' + esc(it.name) + mrpTag(it) + (batchTag(it) ? ' (' + esc(batchTag(it)) + ')' : '') + '</div>' + row(qtyF(it.qty) + ' x ' + rs(it.rate) + (+it.disc ? ' -' + it.disc + '%' : '') + (taxOn(C, t) && +it.gst ? ' [' + it.gst + '%]' : ''), rs(it.taxable));
   });
-  h += line + row('Items: ' + (d.items || []).length, '');
+  h += line + row('Items: ' + (d.items || []).length, '') + (d.discAmt > 0 ? row('Discount given', '-' + rs(d.discAmt)) : '');
   if (taxOn(C, t)) { h += row('Taxable', rs(d.sub)); if (d.inter) h += row('IGST', rs(d.igst)); else h += row('CGST', rs(d.cgst)) + row('SGST', rs(d.sgst)); }
   if (t.tax && d.round) h += row('Round off', rs(d.round));
   h += '<div style="font-size:' + (fs + 3) + 'px">' + row('TOTAL', rs(d.total), true) + '</div>';
@@ -5491,6 +5530,283 @@ function lowStockH(C) {
   return '<div class="note">Items at or below the minimum stock you set. Order these first.</div>' + table([['Item'], ['In stock', 'r'], ['Minimum', 'r'], ['Short by', 'r'], ['Last cost', 'r'], ['Status']], rows.map(function (o) { var p = o.p; return [esc(p.name), qtyF(o.q) + ' ' + esc(p.unit), qtyF(p.min || 0), qtyF(Math.max(0, (p.min || 0) - o.q)), money(p.cost), o.q <= 0 ? '<span class="chip warn">Out of stock</span>' : '<span class="chip warn">Low</span>']; }), 'All items are above their minimum stock.');
 }
 
+/* --- time stamps, clock, preferences, business type, PIN-first --- */
+function p2(n) { return (n < 10 ? '0' : '') + n; }
+function tmStr(iso) {
+  var x = iso ? new Date(iso) : new Date(); if (isNaN(x.getTime())) return '';
+  var h = x.getHours(), ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return p2(x.getDate()) + '/' + p2(x.getMonth() + 1) + '/' + x.getFullYear() + ' ' + p2(h) + ':' + p2(x.getMinutes()) + ' ' + ap;
+}
+function nowStamp() { var u = (typeof user === 'function' && user()) || {}; return tmStr() + (u.name ? ' · ' + u.name : ''); }
+function clockParts() {
+  var x = new Date(), h = x.getHours(), ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  return { t: p2(h) + ':' + p2(x.getMinutes()) + ':' + p2(x.getSeconds()) + ' ' + ap, d: days[x.getDay()] + ', ' + p2(x.getDate()) + '/' + p2(x.getMonth() + 1) + '/' + x.getFullYear() };
+}
+function clockH() { var c = clockParts(); return '<div class="hm-clock"><b id="hmClk">' + c.t + '</b><span id="hmClkD">' + c.d + '</span></div>'; }
+function pfOf(C) { return Object.assign({ dueDays: 15, validDays: 14, terms: '', footer: '', sig: 'Authorised signatory', stamp: true, lowHome: true, idle: 0 }, (C && C.pf) || {}); }
+function stockOn(C) { return !!((BIZ[C.bizType] || BIZ.other).tracked || C.d.products.some(function (p) { return p.tracked; })); }
+function bizNote(k) { var b = BIZ[k] || BIZ.other; return b.label + ': new items start with GST ' + b.gst + '%, unit ' + b.unit + ', stock tracking ' + (b.tracked ? 'ON' : 'OFF') + (b.tracked ? '.' : '. Stock boxes are hidden on Home until you add a stocked item.'); }
+var NOTIMERS = /jsdom/i.test((navigator && navigator.userAgent) || '');
+(function () {
+  if (!NOTIMERS) setInterval(function () { var a = document.getElementById('hmClk'); if (!a) return; var c = clockParts(); a.textContent = c.t; var b = document.getElementById('hmClkD'); if (b) b.textContent = c.d; }, 1000);
+  window.addEventListener('beforeprint', function () { var C = null; try { C = cur(); } catch (e) { } if (C && pfOf(C).stamp === false) document.body.removeAttribute('data-stamp'); else document.body.setAttribute('data-stamp', 'Printed ' + nowStamp()); });
+  document.addEventListener('change', function (e) { var t = e.target; if (t && t.name === 'biz' && t.tagName === 'SELECT') { var n = document.getElementById('bizHint'); if (n) n.textContent = bizNote(t.value); } });
+  var lastAct = Date.now();
+  ['click', 'keydown', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, function () { lastAct = Date.now(); }, true); });
+  if (!NOTIMERS) setInterval(function () { try { if (!DB || !DB.session || S.mode === 'login') return; var m = pfOf(cur()).idle; if (m > 0 && Date.now() - lastAct > m * 60000) { lastAct = Date.now(); A.logout(); toast('Logged out after ' + m + ' minutes without use.'); } } catch (e) { } }, 15000);
+})();
+function prefsH(C) {
+  var p = pfOf(C);
+  return '<form data-submit="savePrefs"><div class="fg">' +
+    field('Invoice due after (days)', '<input name="dueDays" type="number" min="0" max="365" value="' + esc(p.dueDays) + '">') +
+    field('Quotation valid for (days)', '<input name="validDays" type="number" min="1" max="365" value="' + esc(p.validDays) + '">') +
+    field('Auto logout when idle', '<select name="idle">' + opts([[0, 'Never'], [5, '5 minutes'], [10, '10 minutes'], [30, '30 minutes'], [60, '1 hour']], p.idle, function (x) { return x[0]; }, function (x) { return x[1]; }) + '</select>') +
+    field('Signature line on bills', '<input name="sig" maxlength="40" value="' + esc(p.sig) + '">') +
+    field('Default notes and terms on new bills', '<textarea name="terms" maxlength="400">' + esc(p.terms) + '</textarea>', 'wide') +
+    field('Thank-you line at the bottom of bills', '<input name="footer" maxlength="120" value="' + esc(p.footer) + '">', 'wide') +
+    '</div><label class="ck" style="margin-top:10px"><input type="checkbox" name="stamp"' + (p.stamp === false ? '' : ' checked') + '> Print date, time and user name on every printout</label>' +
+    '<label class="ck"><input type="checkbox" name="lowHome"' + (p.lowHome === false ? '' : ' checked') + '> Show low stock box on Home</label>' +
+    '<div class="note">These settings apply to new bills. Old bills are not changed.</div><div style="margin-top:12px"><button class="btn pri" type="submit">Save preferences</button></div></form>';
+}
+function needPinSetup(next) {
+  if (role() !== 'owner') { toast('Ask the owner to set the 4-digit PIN in Settings, Users and Roles.', true); return; }
+  S.pinNext2 = next;
+  modal('<div class="mh"><h2>Set a 4-digit PIN</h2>' + btn('closeModal', 'Cancel', {}, 'sm line') + '</div><form data-submit="pinFirst"><div class="note">Editing or cancelling a bill needs a PIN. Set it once now. Only you should know it.</div><label class="fld"><span>New PIN</span><input name="pin" type="password" inputmode="numeric" maxlength="4" autocomplete="off" required style="max-width:140px;letter-spacing:6px;font-size:20px"></label><label class="fld"><span>New PIN again</span><input name="pin2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" required style="max-width:140px;letter-spacing:6px;font-size:20px"></label><div class="row" style="margin-top:12px"><button class="btn pri" type="submit">Save PIN and continue</button></div></form>');
+}
+/* --- home search, show-more, godown transfers, recycle bin view, exports, auto backup --- */
+function hmMoreBtn(k, total, small, big) {
+  if (total <= small) return '';
+  var open = !!(S.hmMore && S.hmMore[k]);
+  return '<div style="text-align:center;margin-top:8px"><button type="button" class="btn sm line" data-act="hmMore" data-k="' + k + '" aria-expanded="' + open + '">' + (open ? '▴ Show less' : '▾ Show ' + (Math.min(total, big) - small) + ' more') + '</button></div>';
+}
+function hmSearchH(C) {
+  return '<div class="card hmsrch"><label class="fld" style="margin:0"><span>Search everything</span><input id="hq" class="inp" type="search" autocomplete="off" placeholder="Customer, supplier, item, bill number, phone, GSTIN, amount, vehicle..." value="' + esc(S.hq || '') + '" aria-label="Search all data"></label><div id="hqres">' + hmSearchRes(C, S.hq || '') + '</div></div>';
+}
+function hmSearchRes(C, q) {
+  q = String(q || '').trim().toLowerCase(); if (q.length < 1) return '';
+  var words = q.split(/\s+/), d = C.d, out = '', fin = canView('accounting');
+  function hit(s) { s = String(s).toLowerCase(); return words.every(function (w) { return s.indexOf(w) >= 0; }); }
+  function rup(n) { return (n / 100).toFixed(2); }
+  function grp(title, rows, more) { if (!rows.length) return ''; return '<div class="sg"><div class="sgt">' + esc(title) + ' <span class="mute">(' + rows.length + (more ? '+' : '') + ')</span></div>' + rows.slice(0, 6).join('') + '</div>'; }
+  function row(act, id, a, b, c) { return '<button type="button" class="sug-row" data-act="' + act + '" data-id="' + esc(id) + '"><span><b>' + esc(a) + '</b> <span class="note">' + esc(b) + '</span></span><span class="note">' + esc(c || '') + '</span></button>'; }
+  var docs = d.docs.filter(function (x) { return hit([x.no, DT[x.type].label, partyName(C, x.partyId), x.notes || '', x.req || '', rup(x.total || 0), (x.items || []).map(function (i) { return i.name; }).join(' '), x.vehicle || '', x.ewb && x.ewb.no || ''].join(' ')); }).sort(function (a, b) { return (b.date + b.no).localeCompare(a.date + a.no); });
+  out += grp('Bills and documents', docs.map(function (x) { return row('view', x.id, x.no, DT[x.type].label + ' · ' + partyName(C, x.partyId) + (x.cancelled ? ' · Cancelled' : ''), dmy(x.date) + (DT[x.type].items ? ' · ' + money(x.total) : '')); }));
+  var ps = d.parties.filter(function (p) { return hit([p.name, p.phone, p.email, p.gstin, p.city, p.address].join(' ')); });
+  out += grp('Customers and suppliers', ps.map(function (p) { return row('ledger', p.id, p.name, (p.type === 'customer' ? 'Customer' : 'Supplier') + (p.phone ? ' · ' + p.phone : ''), money(partyBalance(C, p))); }));
+  var pr = d.products.filter(function (p) { return hit([p.name, p.sku, p.hsn, p.barcode || '', p.cat || ''].join(' ')); });
+  out += grp('Items', pr.map(function (p) { return row('editProd', p.id, p.name, (p.cat || '') + (p.tracked ? ' · stock ' + qtyF(stockQty(C, p.id)) + ' ' + p.unit : ''), money(p.sale)); }));
+  if (fin) {
+    var pa = d.payments.filter(function (x) { return hit([x.no, partyName(C, x.partyId), x.mode, x.note || '', rup(x.amount)].join(' ')); });
+    out += grp('Receipts and payments', pa.map(function (x) { return row('viewPay', x.id, x.no, partyName(C, x.partyId) + (x.cancelled ? ' · Cancelled' : ''), dmy(x.date) + ' · ' + money(x.amount)); }));
+    var ex = d.expenses.filter(function (e) { return hit([e.cat, e.note || '', e.mode || '', rup(e.amount)].join(' ')); });
+    out += grp('Income and expenses', ex.map(function (e) { return row('editExp', e.id, e.cat, (e.kind === 'income' ? 'Income' : 'Expense') + (e.note ? ' · ' + e.note : ''), dmy(e.date) + ' · ' + money(e.amount)); }));
+  }
+  var tr = (d.transfers || []).filter(function (t) { return hit([t.no, t.from, t.to, t.vehicle || '', t.driver || '', t.transporter || '', t.note || ''].join(' ')); });
+  out += grp('Godown transfers', tr.map(function (t) { return row('viewTr', t.id, t.no, t.from + ' to ' + t.to + (t.vehicle ? ' · ' + t.vehicle : ''), dmy(t.date)); }));
+  return out || '<div class="note" style="margin-top:8px">Nothing found for "' + esc(q) + '".</div>';
+}
+
+/* ---------- godown transfer documents ---------- */
+function trList(C) { C.d.transfers = C.d.transfers || []; return C.d.transfers; }
+function trNo(C, date) { var key = 'transfer|' + fyLabel(date); C.d.counters[key] = (C.d.counters[key] || 0) + 1; return ((C.d.series.transfer && C.d.series.transfer.prefix) || 'STF') + '/' + fyLabel(date) + '/' + String(C.d.counters[key]).padStart(4, '0'); }
+function trFormH(C) {
+  var tracked = C.d.products.filter(function (p) { return p.tracked; }), whs = C.d.warehouses;
+  var lines = '';
+  for (var i = 0; i < 6; i++) lines += '<div class="row" style="margin-bottom:6px"><select class="inp" name="p' + i + '" style="flex:2 1 220px" aria-label="Item ' + (i + 1) + '"><option value="">' + (i ? 'Another item (optional)' : 'Select item') + '</option>' + opts(tracked, '', function (p) { return p.id; }, function (p) { return p.name + ' (' + qtyF(stockQty(C, p.id)) + ' ' + p.unit + ')'; }) + '</select><input class="inp num" name="q' + i + '" type="number" min="0" step="any" placeholder="Qty" style="flex:1 1 90px" aria-label="Quantity ' + (i + 1) + '"></div>';
+  return '<div class="card" style="background:var(--bg)"><h2>New godown transfer</h2><div class="note">Moves stock from one godown to another and makes a transfer challan with vehicle details. Carry the printed challan with the goods.</div><form data-submit="saveTransfer"><div class="fg">' +
+    field('From godown', '<select name="from">' + opts(whs) + '</select>') + field('To godown', '<select name="to">' + opts(whs, whs[1] || '') + '</select>') + field('Date', '<input name="date" type="date" required value="' + today() + '">') +
+    field('Vehicle number', '<input name="vehicle" maxlength="20" placeholder="TN 68 AB 1234" style="text-transform:uppercase">') + field('Driver name and phone', '<input name="driver" maxlength="60">') + field('Transporter (if any)', '<input name="transporter" maxlength="60">') +
+    field('E-way bill number (if any)', '<input name="ewb" maxlength="20" inputmode="numeric">') + field('Note', '<input name="note" maxlength="120">') + '</div><h3 style="margin:10px 0 6px">Items to move</h3>' + lines + '<div style="margin-top:10px"><button class="btn pri" type="submit">Save transfer</button></div></form></div>';
+}
+function trTabH(C) {
+  var list = trList(C).slice().sort(function (a, b) { return (b.date + b.no).localeCompare(a.date + a.no); });
+  var h = C.d.warehouses.length < 2 ? '<div class="hint">Add a second godown in the Warehouses tab first.</div>' : (canWrite('inventory') ? trFormH(C) : '');
+  h += '<h2 style="margin-top:12px">Transfer challans</h2>' + table([['No'], ['Date'], ['From'], ['To'], ['Vehicle'], ['Items', 'r'], ['Status']], list.map(function (t) { return ['<b>' + esc(t.no) + '</b>', dmy(t.date), esc(t.from), esc(t.to), esc(t.vehicle || '-'), t.items.length, t.cancelled ? '<span class="chip warn">Cancelled</span>' : '<span class="chip ok">Done</span>']; }), 'No godown transfers yet.', null, list.map(function (t) { return ['viewTr', t.id]; }));
+  return h;
+}
+function trViewH(t) {
+  var C = cur();
+  var h = '<div class="mh"><h2>Transfer ' + esc(t.no) + '</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="pre">' +
+    '<div class="hd"><div><b style="font-size:17px">' + esc(C.name) + '</b><div style="font-size:12px;opacity:.8">' + esc(C.address || '') + (C.gstin ? ' · GSTIN ' + esc(C.gstin) : '') + '</div></div><div style="text-align:right"><b>STOCK TRANSFER CHALLAN</b><div style="font-size:12px;opacity:.8">' + esc(t.no) + ' · ' + dmy(t.date) + '</div></div></div>' +
+    '<div class="fg"><div><div class="note">From godown</div><b>' + esc(t.from) + '</b></div><div><div class="note">To godown</div><b>' + esc(t.to) + '</b></div><div><div class="note">Vehicle</div><b>' + esc(t.vehicle || '-') + '</b></div><div><div class="note">Driver</div><b>' + esc(t.driver || '-') + '</b></div><div><div class="note">Transporter</div><b>' + esc(t.transporter || '-') + '</b></div><div><div class="note">E-way bill</div><b>' + esc(t.ewb || '-') + '</b></div></div>' +
+    table([['Item'], ['HSN'], ['Qty', 'r']], t.items.map(function (it) { return [esc(it.name), esc(it.hsn || ''), qtyF(it.qty) + ' ' + esc(it.unit || '')]; }), '') +
+    (t.note ? '<div class="note">' + esc(t.note) + '</div>' : '') + '<div class="note">Not a sale. Goods moved between own godowns. Entered by <b>' + esc(t.by || '-') + '</b> on ' + tmStr(t.at) + (t.cancelled ? ' · Cancelled ' + dmy(t.cancelledAt) : '') + '</div></div>' +
+    '<div class="row">' + btn('print', 'Print', {}, 'pri') + (t.cancelled ? '' : btn('cancelTr', 'Cancel transfer', { id: t.id }, 'warn')) + '</div>';
+  return h;
+}
+function bindMore(A) {
+  A.hmMore = function (d) { S.hmMore = S.hmMore || {}; S.hmMore[d.k] = !S.hmMore[d.k]; render(); };
+  A.viewTr = function (d) { var t = trList(cur()).find(function (x) { return x.id === d.id; }); if (t) modal(trViewH(t)); };
+  A.saveTransfer = function (fd) {
+    if (!canWrite('inventory')) { toast('You cannot move stock.', true); return; }
+    var C = cur(), a = fd.get('from'), b = fd.get('to'), date = fd.get('date') || today();
+    if (a === b) { toast('Choose two different godowns.', true); return; }
+    var want = {}, order = [];
+    for (var i = 0; i < 6; i++) { var pid = fd.get('p' + i), q = parseFloat(fd.get('q' + i)) || 0; if (!pid && !q) continue; if (!pid || !(q > 0)) { toast('Line ' + (i + 1) + ': choose the item and a quantity above zero.', true); return; } if (!want[pid]) { want[pid] = 0; order.push(pid); } want[pid] += q; }
+    if (!order.length) { toast('Add at least one item.', true); return; }
+    var plan = [];
+    for (var k = 0; k < order.length; k++) {
+      var p = prodById(C, order[k]), need = want[order[k]], have = p.batch ? usableQty(C, p, a, '0000-00-00') : stockQty(C, p.id, a);
+      if (need > have + 1e-9) { toast('Only ' + qtyF(have) + ' ' + p.unit + ' of ' + p.name + ' in ' + a + '.', true); return; }
+      plan.push({ p: p, q: need });
+    }
+    var t = { id: uid(), no: trNo(C, date), date: date, from: a, to: b, vehicle: String(fd.get('vehicle') || '').trim().toUpperCase(), driver: String(fd.get('driver') || '').trim(), transporter: String(fd.get('transporter') || '').trim(), ewb: String(fd.get('ewb') || '').trim(), note: String(fd.get('note') || '').trim(), items: [], by: (user() || {}).name || '', at: new Date().toISOString() };
+    plan.forEach(function (x) {
+      var p = x.p; t.items.push({ pid: p.id, name: p.name, hsn: p.hsn, unit: p.unit, qty: x.q });
+      var parts = p.batch ? allocBatches(C, p, a, x.q, '0000-00-00') : [{ q: x.q, b: '', e: '' }];
+      parts.forEach(function (y) {
+        addMove(C, { date: date, pid: p.id, wh: a, qty: -y.q, cost: p.cost, type: 'transfer', ref: t.id, note: t.no + ' to ' + b, batch: y.b, exp: y.e });
+        addMove(C, { date: date, pid: p.id, wh: b, qty: y.q, cost: p.cost, type: 'transfer', ref: t.id, note: t.no + ' from ' + a, batch: y.b, exp: y.e });
+      });
+    });
+    trList(C).push(t); log('Godown transfer ' + a + ' to ' + b + (t.vehicle ? ' vehicle ' + t.vehicle : ''), t.no);
+    S.tab.inventory = 'transfers'; afterChange(); modal(trViewH(t)); toast('Transfer saved.');
+  };
+  A.cancelTr = function (d) { modal('<div class="mh"><h2>Cancel transfer?</h2></div><div class="note">Stock goes back to the first godown.</div><div class="row">' + btn('doCancelTr', 'Yes, cancel it', { id: d.id }, 'warn') + btn('closeModal', 'Keep it', {}, 'line') + '</div>'); };
+  A.doCancelTr = function (d) {
+    var C = cur(), t = trList(C).find(function (x) { return x.id === d.id; }); if (!t || t.cancelled) { closeModal(); return; }
+    C.d.moves.filter(function (m) { return m.ref === t.id && m.type === 'transfer'; }).forEach(function (m) { addMove(C, { date: today(), pid: m.pid, wh: m.wh, qty: -m.qty, cost: m.cost, type: 'transfer', ref: t.id, note: 'Reversal of ' + t.no, batch: m.batch, exp: m.exp }); });
+    t.cancelled = true; t.cancelledAt = today(); log('Cancelled godown transfer', t.no); closeModal(); toast('Cancelled.'); afterChange();
+  };
+}
+
+function mvAct(C, m) {
+  if (!m.ref) return null;
+  if (docById(C, m.ref)) return ['view', m.ref];
+  if (trList(C).some(function (t) { return t.id === m.ref; })) return ['viewTr', m.ref];
+  return null;
+}
+
+/* ---------- recycle bin view ---------- */
+function vBin() {
+  var C = cur();
+  var h = top('Recycle Bin', 'Everything deleted or cancelled is kept here', '') + '<div class="card"><h2>Deleted items</h2>' + binTab(['expense', 'journal', 'party', 'product']) + '</div>';
+  var canc = C.d.docs.filter(function (d) { return d.cancelled; }).map(function (d) { return { k: 'doc', id: d.id, no: d.no, t: DT[d.type].label, date: d.date, who: partyName(C, d.partyId), amt: DT[d.type].items ? d.total : null, on: d.cancelledAt || '' }; })
+    .concat(C.d.payments.filter(function (p) { return p.cancelled; }).map(function (p) { return { k: 'pay', id: p.id, no: p.no, t: p.type === 'receipt' ? 'Receipt' : 'Payment', date: p.date, who: partyName(C, p.partyId), amt: p.amount, on: '' }; }))
+    .concat(trList(C).filter(function (t) { return t.cancelled; }).map(function (t) { return { k: 'tr', id: t.id, no: t.no, t: 'Godown transfer', date: t.date, who: t.from + ' to ' + t.to, amt: null, on: t.cancelledAt || '' }; }))
+    .sort(function (a, b) { return (b.date + b.no).localeCompare(a.date + a.no); });
+  h += '<div class="card"><h2>Cancelled bills, receipts and transfers</h2><div class="note">These stay on record for audit. Click a row to open it.</div>' + table([['Type'], ['No'], ['Date'], ['Party / details'], ['Amount', 'r']], canc.map(function (x) { return [esc(x.t), '<b>' + esc(x.no) + '</b>', dmy(x.date), esc(x.who), x.amt === null ? '-' : money(x.amt)]; }), 'Nothing cancelled.', null, canc.map(function (x) { return [x.k === 'doc' ? 'view' : x.k === 'pay' ? 'viewPay' : 'viewTr', x.id]; })) + '</div>';
+  return h;
+}
+
+/* ---------- audit log + day book downloads ---------- */
+function auditModel() {
+  var C = cur();
+  return { title: 'Audit Log', sub: C.name + ' · ' + C.d.audit.length + ' entries · Generated ' + nowStamp(), tables: [{ name: '', head: ['Date and time', 'User', 'Action', 'Reference'], right: [false, false, false, false], rows: C.d.audit.map(function (a) { return [tmStr(a.ts), a.user, a.act, a.ref]; }), foot: null }] };
+}
+function dbDocLines(C, x) { return (x.items || []).map(function (i) { return i.name + ' x ' + qtyF(i.qty); }).join(', '); }
+function dayBookData(C, dt) {
+  var rows = dayBookRows(C, dt), live = rows.filter(function (r) { return !r.cancelled; });
+  function sm(k) { return sumBy(live.filter(function (r) { return r.k === k; }), function (r) { return r.amt; }); }
+  return { dt: dt, rows: rows, sales: sm('invoice') - sm('creditnote'), purch: sm('pinvoice') - sm('preturn'), recv: sm('receipt') + sm('income'), paid: sm('payment') + sm('expense') };
+}
+function dayBookModel(dt) {
+  var C = cur(), D = dayBookData(C, dt), n = function (v) { return v / 100; };
+  var modes = {}; C.d.payments.forEach(function (p) { if (p.date === dt && !p.cancelled) { var k = (p.type === 'receipt' ? 'Received ' : 'Paid ') + (p.mode || 'Cash'); modes[k] = (modes[k] || 0) + p.amount; } });
+  C.d.expenses.forEach(function (e) { if (e.date === dt) { var k = (e.kind === 'income' ? 'Received ' : 'Paid ') + (e.mode || 'Cash'); modes[k] = (modes[k] || 0) + e.amount; } });
+  var entries = [], lines = [];
+  C.d.docs.forEach(function (x) { if (x.date !== dt || !DOCL_DB[x.type]) return; entries.push([DOCL_DB[x.type], x.no, x.at ? tmStr(x.at).slice(11) : '', partyName(C, x.partyId), dbDocLines(C, x), n(x.sub || 0), n((x.cgst || 0) + (x.sgst || 0) + (x.igst || 0)), n(x.discAmt || 0), n(x.total || 0), x.cancelled ? 'Cancelled' : statusOf(C, x), x.by || '']); (x.items || []).forEach(function (i) { lines.push([x.no, i.name, i.hsn || '', qtyF(i.qty) + ' ' + (i.unit || ''), n(i.rate), +i.disc || 0, n(i.taxable || 0)]); }); });
+  C.d.payments.forEach(function (p) { if (p.date !== dt) return; var inv = p.refId ? docById(C, p.refId) : null; entries.push([p.type === 'receipt' ? 'Receipt' : 'Payment', p.no, p.at ? tmStr(p.at).slice(11) : '', partyName(C, p.partyId), (p.mode || '') + (inv ? ' against ' + inv.no : ' on account') + (p.disc ? ' (discount ' + (p.disc / 100).toFixed(2) + ')' : ''), '', '', n(p.disc || 0), n(p.amount), p.cancelled ? 'Cancelled' : 'Done', p.by || '']); });
+  C.d.expenses.forEach(function (e) { if (e.date !== dt) return; entries.push([e.kind === 'income' ? 'Income' : 'Expense', '-', '', e.cat, (e.mode || '') + (e.note ? ' ' + e.note : ''), '', '', '', n(e.amount), 'Done', e.by || '']); });
+  var cash = cashBank(C);
+  return { title: 'Day Book ' + dmy(dt), sub: C.name + ' · Generated ' + nowStamp(), tables: [
+    { name: 'Summary', head: ['Particulars', 'Amount'], right: [false, true], rows: [['Sales (less returns)', n(D.sales)], ['Purchases (less returns)', n(D.purch)], ['Money received', n(D.recv)], ['Money paid', n(D.paid)], ['Net cash movement', n(D.recv - D.paid)], ['Cash in hand now', n(cash.cash)], ['Bank now', n(cash.bank)]], foot: null },
+    { name: 'By payment mode', head: ['Mode', 'Amount'], right: [false, true], rows: Object.keys(modes).sort().map(function (k) { return [k, n(modes[k])]; }), foot: null },
+    { name: 'All entries', head: ['Type', 'No', 'Time', 'Party / category', 'Details', 'Taxable', 'Tax', 'Discount', 'Amount', 'Status', 'By'], right: [false, false, false, false, false, true, true, true, true, false, false], rows: entries, foot: null },
+    { name: 'Item lines', head: ['Bill', 'Item', 'HSN', 'Qty', 'Rate', 'Disc %', 'Taxable'], right: [false, false, false, false, true, true, true], rows: lines, foot: null }
+  ].filter(function (t) { return t.rows.length; }) };
+}
+var DOCL_DB = { invoice: 'Sales', pinvoice: 'Purchase', creditnote: 'Sales return', debitnote: 'Debit note', preturn: 'Purchase return' };
+function pdfBars(doc, x, y, w, h, labels, series, colors, title) {
+  var max = 1; series.forEach(function (s) { s.forEach(function (v) { if (v > max) max = v; }); });
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(21); doc.text(title, x, y - 14);
+  doc.setDrawColor(210, 208, 200); doc.line(x, y + h, x + w, y + h);
+  var gw = w / labels.length, bw = Math.min(26, (gw - 10) / series.length);
+  labels.forEach(function (lb, i) {
+    series.forEach(function (s, j) {
+      var bh = Math.max(0.5, h * s[i] / max), bx = x + i * gw + (gw - bw * series.length) / 2 + j * bw, c = colors[j];
+      doc.setFillColor(c[0], c[1], c[2]); doc.rect(bx, y + h - bh, bw - 1.5, bh, 'F');
+      if (s[i] > 0) { doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(60); doc.text(pdfTxt(s[i]).replace(/\.00$/, ''), bx + (bw - 1.5) / 2, y + h - bh - 2, { align: 'center' }); }
+    });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(90); doc.text(lb, x + i * gw + gw / 2, y + h + 10, { align: 'center' });
+  });
+}
+async function dayBookPdf(dt) {
+  await needPdf();
+  var C = cur(), D = dayBookData(C, dt), m = dayBookModel(dt), J = window.jspdf.jsPDF;
+  var doc = new J({ orientation: 'landscape', unit: 'pt', format: 'a4' }), W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 36;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(21); doc.text(pdfTxt(m.title), M, 40);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(110); doc.text(pdfTxt(m.sub), M, 55);
+  var kp = [['Sales', D.sales], ['Purchases', D.purch], ['Money received', D.recv], ['Money paid', D.paid]], kw = (W - 2 * M - 30) / 4;
+  kp.forEach(function (k, i) { var x = M + i * (kw + 10); doc.setDrawColor(210, 208, 200); doc.setFillColor(250, 249, 246); doc.rect(x, 66, kw, 44, 'FD'); doc.setFontSize(8); doc.setTextColor(110); doc.text(k[0].toUpperCase(), x + 8, 80); doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(21); doc.text(pdfTxt(k[1] / 100), x + 8, 100); doc.setFont('helvetica', 'normal'); });
+  var BL = [[21, 21, 21], [242, 140, 58], [120, 120, 115], [190, 190, 185]];
+  pdfBars(doc, M, 165, 250, 78, ['Sales', 'Purch', 'Recd', 'Paid'], [[Math.max(0, D.sales / 100), Math.max(0, D.purch / 100), Math.max(0, D.recv / 100), Math.max(0, D.paid / 100)]], [[242, 140, 58]], 'Today at a glance (Rs)');
+  var days = [], sa = [], rc = []; for (var i = 6; i >= 0; i--) { var d2 = addDays(dt, -i), q = dayBookData(C, d2); days.push(d2.slice(8) + '/' + d2.slice(5, 7)); sa.push(Math.max(0, q.sales / 100)); rc.push(Math.max(0, q.recv / 100)); }
+  pdfBars(doc, M + 290, 165, 330, 78, days, [sa, rc], [[21, 21, 21], [242, 140, 58]], 'Last 7 days, Rs (black = sales, orange = received)');
+  var modes = m.tables.find(function (t) { return t.name === 'By payment mode'; });
+  if (modes) { var yy = 158; doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(21); doc.text('By payment mode (Rs)', W - M - 150, 151); var mx = Math.max.apply(null, modes.rows.map(function (r) { return r[1]; }).concat([1])); modes.rows.slice(0, 6).forEach(function (r) { doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(70); doc.text(pdfTxt(r[0]), W - M - 150, yy + 8); doc.setFillColor(242, 140, 58); doc.rect(W - M - 150, yy + 11, Math.max(1, 120 * r[1] / mx), 6, 'F'); doc.text(pdfTxt(r[1]), W - M - 150 + 124, yy + 17); yy += 22; }); }
+  var y = 290;
+  m.tables.filter(function (t) { return t.name !== 'By payment mode'; }).forEach(function (t) {
+    if (y > H - 100) { doc.addPage(); y = 40; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(21); doc.text(pdfTxt(t.name), M, y); y += 6;
+    var cs = {}; t.right.forEach(function (r, i) { if (r) cs[i] = { halign: 'right' }; });
+    doc.autoTable({ startY: y, head: [t.head.map(pdfTxt)], body: t.rows.map(function (r) { return r.map(pdfTxt); }), theme: 'grid', margin: { left: M, right: M }, styles: { fontSize: 7.5, cellPadding: 3, lineColor: [210, 208, 200], lineWidth: 0.4, textColor: [21, 21, 21] }, headStyles: { fillColor: [21, 21, 21], textColor: 255 }, columnStyles: cs });
+    y = doc.lastAutoTable.finalY + 20;
+  });
+  var np = doc.internal.getNumberOfPages(); for (var p = 1; p <= np; p++) { doc.setPage(p); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120); doc.text(pdfTxt(C.name) + ' · Printed ' + pdfTxt(nowStamp()), M, H - 18); doc.text('Page ' + p + ' of ' + np, W - M, H - 18, { align: 'right' }); }
+  return doc.output('arraybuffer');
+}
+function bindMore2(A) {
+  A.dlDayBook = async function (d) {
+    var dt = S.dbDate || today(), fmt = d.fmt;
+    try {
+      toast('Preparing ' + fmt.toUpperCase() + '...');
+      var data = fmt === 'pdf' ? await dayBookPdf(dt) : fmt === 'xlsx' ? await xlsxModel(dayBookModel(dt)) : csvModel(dayBookModel(dt));
+      await saveFile('day-book-' + dt + '.' + fmt, data);
+    } catch (e) { toast('Could not prepare the file.', true); if (window.console) console.error(e); }
+  };
+  A.dlAudit = async function (d) {
+    try { var m = auditModel(); toast('Preparing ' + d.fmt.toUpperCase() + '...'); var data = d.fmt === 'pdf' ? await pdfModel(m) : d.fmt === 'xlsx' ? await xlsxModel(m) : csvModel(m); await saveFile(fname('audit-log-' + cur().name, d.fmt), data); }
+    catch (e) { toast('Could not prepare the file.', true); if (window.console) console.error(e); }
+  };
+}
+
+/* ---------- automatic backup to Google Drive folder (Windows app) ---------- */
+function deskBak() { return window.billdnaDesktop && window.billdnaDesktop.backup ? window.billdnaDesktop.backup : null; }
+function abState() { DB.autoBak = DB.autoBak || { dir: '', last: '', lastAt: '', on: true, msg: '' }; return DB.autoBak; }
+async function autoBackupRun(force) {
+  var api = deskBak(), ab; if (!api || !DB) return false; ab = abState();
+  if (!ab.dir || (!force && (ab.on === false || ab.last === today()))) return false;
+  if (S.abBusy) return false; S.abBusy = true;
+  try {
+    var files = DB.companies.map(function (C) { return { name: 'BillDNA-' + slug(C.name) + '-' + today() + '.json', data: backupJson(C) }; });
+    var r = await api.save({ dir: ab.dir, files: files, keep: 30 });
+    if (r && r.ok) { ab.last = today(); ab.lastAt = new Date().toISOString(); ab.msg = 'Saved ' + files.length + ' file(s)'; save(); toast('Daily backup saved to your Google Drive folder.'); if (S.view === 'settings') render(); return true; }
+    ab.msg = 'Failed: ' + ((r && r.error) || 'folder not found'); save(); toast('Auto backup failed. Check the backup folder in Settings, Backup.', true); return false;
+  } catch (e) { ab.msg = 'Failed'; return false; } finally { S.abBusy = false; }
+}
+function autoBackupStart() { if (!deskBak()) return; setTimeout(function () { autoBackupRun(false); }, 4000); if (!NOTIMERS) setInterval(function () { autoBackupRun(false); }, 600000); }
+function abCardH() {
+  var ab = abState(), api = deskBak();
+  var steps = '<ol class="note" style="margin:8px 0 0 18px;line-height:1.7"><li>Install <b>Google Drive for desktop</b> on this computer: search "Google Drive for desktop" and download it from Google, then sign in with your Gmail.</li><li>Open File Explorer. A new drive named <b>Google Drive</b> (letter G:) appears with a folder <b>My Drive</b>.</li><li>Inside My Drive make a new folder named <b>BillDNA Backup</b>.</li><li>Come back here, press <b>Choose Google Drive folder</b> and select that BillDNA Backup folder.</li><li>Done. Every day, the first time you open Bill DNA in the morning, a backup file is saved there and Google Drive uploads it by itself. The last 30 days are kept.</li></ol>';
+  var h = '<div class="card" style="background:var(--bg)"><h2>Automatic Google Drive backup</h2>';
+  if (!api) return h + '<div class="note">Daily automatic backup works in the Bill DNA Windows app. In the browser, use Download backup file below and save it to Google Drive.</div>' + steps + '</div>';
+  h += '<div class="' + (ab.dir ? 'hint' : 'note') + '">' + (ab.dir ? '<b>Backup folder:</b> ' + esc(ab.dir) + '<br>' + (ab.last ? 'Last backup: ' + esc(tmStr(ab.lastAt)) + ' · ' + esc(ab.msg || '') : 'No backup taken yet.') : 'No folder chosen yet. Follow the steps below.') + '</div>';
+  h += '<div class="row" style="margin:10px 0">' + btn('abPick', ab.dir ? 'Change folder' : 'Choose Google Drive folder', {}, 'pri') + (ab.dir ? btn('abNow', 'Back up now', {}, 'line') + btn('abToggle', ab.on === false ? 'Turn daily backup on' : 'Turn daily backup off', {}, 'line') : '') + '</div>';
+  return h + '<b>How to set up</b>' + steps + '</div>';
+}
+function bindBackup(A) {
+  A.abPick = async function () {
+    if (!ownerOnly()) return; var api = deskBak(); if (!api) return;
+    var r = await api.pick(); if (!r || !r.dir) return;
+    var ab = abState(); ab.dir = r.dir; ab.on = true; ab.last = ''; save(); log('Backup folder set', r.dir);
+    var ok = await autoBackupRun(true); if (!ok) render();
+  };
+  A.abNow = async function () { if (!ownerOnly()) return; var ok = await autoBackupRun(true); if (!ok) render(); };
+  A.abToggle = function () { if (!ownerOnly()) return; var ab = abState(); ab.on = ab.on === false; save(); toast(ab.on ? 'Daily backup is on.' : 'Daily backup is off.'); render(); };
+}
+
 /* ---------- export: PDF, Excel, CSV ---------- */
 var LIBS = {};
 var LB = window.BILLDNA_LIBS || '';
@@ -5578,13 +5894,13 @@ function docsRichModel(list, pur, title) {
     return [d.no, dmy(d.date), p.name || '', p.gstin || '', p.state || '', p.phone || '', p.address || '', DT[d.type].items ? n(d.sub) : '', DT[d.type].items ? n(d.cgst) : '', DT[d.type].items ? n(d.sgst) : '', DT[d.type].items ? n(d.igst) : '', DT[d.type].items ? n(d.total) : '', rec === null ? '' : n(rec), bal === null ? '' : n(bal), statusOf(C, d), d.due ? dmy(d.due) : ''];
   });
   var foot = rows.length ? ['Total', '', '', '', '', '', ''].concat(tot.map(n)).concat(['', '']) : null;
-  return { title: title, sub: C.name + ' · Generated ' + dmy(today()), tables: [{ name: '', head: head, right: right, rows: rows, foot: foot }] };
+  return { title: title, sub: C.name + ' · Generated ' + nowStamp(), tables: [{ name: '', head: head, right: right, rows: rows, foot: foot }] };
 }
 function paysRichModel(list, pur, title) {
   var C = cur(), n = function (x) { return (x || 0) / 100; }, total = 0;
   var head = ['Voucher no', 'Date', pur ? 'Supplier' : 'Customer', 'GSTIN', 'State', 'Phone', 'Mode', 'Against invoice', 'Amount', 'Status', 'Note'];
   var rows = list.map(function (p) { var pr = partyById(C, p.partyId) || {}, inv = p.refId ? docById(C, p.refId) : null; if (!p.cancelled) total += p.amount; return [p.no, dmy(p.date), pr.name || '', pr.gstin || '', pr.state || '', pr.phone || '', p.mode, inv ? inv.no : 'On account', n(p.amount), p.cancelled ? 'Cancelled' : (pur ? 'Paid' : 'Received'), p.note || '']; });
-  return { title: title, sub: C.name + ' · Generated ' + dmy(today()), tables: [{ name: '', head: head, right: head.map(function (h, i) { return i === 8; }), rows: rows, foot: rows.length ? ['Total', '', '', '', '', '', '', '', n(total), '', ''] : null }] };
+  return { title: title, sub: C.name + ' · Generated ' + nowStamp(), tables: [{ name: '', head: head, right: head.map(function (h, i) { return i === 8; }), rows: rows, foot: rows.length ? ['Total', '', '', '', '', '', '', '', n(total), '', ''] : null }] };
 }
 function richModel(src) {
   if (src !== 'main' || S.draft || !S.cur) return null;
@@ -5627,7 +5943,7 @@ function modelFor(src) {
     var on = root.querySelector('.tab.on, .flow .st.on'); if (on) title += ' - ' + on.textContent.replace(/\d+$/, '').trim();
     if (S.view === 'gst') sub += (S.tab.gst === 'gstr9' ? ' · Financial year ' + (S.tab.g9y || g9Years()[0]) + '-' + String(+(S.tab.g9y || g9Years()[0]) + 1).slice(2) : ' · ' + dmy(rng().from) + ' to ' + dmy(rng().to));
   }
-  return { title: title, sub: sub + ' · Generated ' + dmy(today()), tables: scrape(root) };
+  return { title: title, sub: sub + ' · Generated ' + nowStamp(), tables: scrape(root) };
 }
 function moneyNum(s) { var m = /^₹(-?[\d,]+\.\d{2})$/.exec(String(s)); return m ? parseFloat(m[1].replace(/,/g, '')) : null; }
 function xlVal(v) { if (typeof v === 'number') return v; var n = moneyNum(v); return n === null ? v : n; }
@@ -5700,7 +6016,7 @@ function docModel(d) {
   var tabs = [{ name: 'Details', head: ['Field', 'Value'], rows: det }];
   if (t.items) {
     tabs.push({ name: 'Items', head: ['Item', 'HSN/SAC', 'Qty', 'Unit', 'Rate', 'Disc %', 'GST %', 'Taxable', 'Tax', 'Total'], rows: d.items.map(function (it) { return [it.name + mrpTag(it) + (batchTag(it) ? ' (' + batchTag(it) + ')' : ''), it.hsn || '', it.qty, it.unit || '', n(it.rate), it.disc || 0, it.gst, n(it.taxable), n(it.tax), n((it.taxable || 0) + (it.tax || 0))]; }) });
-    var tot = [['Taxable value', n(d.sub)], ['CGST', n(d.cgst)], ['SGST', n(d.sgst)], ['IGST', n(d.igst)], ['Round off', n(d.round)], ['Total', n(d.total)]];
+    var tot = (d.discAmt > 0 ? [['Bill discount (deducted)', n(d.discAmt)]] : []).concat([['Taxable value', n(d.sub)], ['CGST', n(d.cgst)], ['SGST', n(d.sgst)], ['IGST', n(d.igst)], ['Round off', n(d.round)], ['Total', n(d.total)]]);
     if (d.type === 'invoice') { tot.push(['Balance due', n(outstanding(C, d))]); }
     tabs.push({ name: 'Totals', head: ['Item', 'Amount'], rows: tot });
   }
@@ -5743,7 +6059,7 @@ async function docPdf(d, copies) {
     doc.autoTable({ startY: y, head: [head], body: body, theme: 'grid', margin: { left: M, right: M }, styles: { fontSize: 8.5, cellPadding: 5, lineColor: [210, 208, 200], lineWidth: 0.4, textColor: [21, 21, 21] }, headStyles: { fillColor: [21, 21, 21], textColor: 255 }, alternateRowStyles: { fillColor: [247, 246, 242] }, columnStyles: cs });
     y = doc.lastAutoTable.finalY + 16;
     if (y > H - 250) { doc.addPage(); y = 50; }
-    var rows = [['Taxable value', inr(d.sub)]];
+    var rows = (d.discAmt > 0 ? [['Bill discount (deducted)', '-' + inr(d.discAmt)]] : []).concat([['Taxable value', inr(d.sub)]]);
     if (reg) { if (d.inter) rows.push(['IGST', inr(d.igst)]); else { rows.push(['CGST', inr(d.cgst)]); rows.push(['SGST', inr(d.sgst)]); } }
     if (t.tax) rows.push(['Round off', inr(d.round)]);
     var tx = W - M - 200; doc.setFontSize(9.5);
@@ -5758,10 +6074,10 @@ async function docPdf(d, copies) {
     if (d.type === 'invoice' && C.bank && C.bank.acc) { doc.setFontSize(8.5); doc.text(doc.splitTextToSize('Bank: ' + [C.bank.name, 'A/c ' + C.bank.acc, 'IFSC ' + C.bank.ifsc, C.bank.upi ? 'UPI ' + C.bank.upi : ''].filter(Boolean).join('  |  '), W - 2 * M), M, y); y += 20; }
     if (d.type === 'invoice' && upiBal(C, d) && C.bank && upiOk(C.bank.upi)) { if (y + 90 > H - 70) { doc.addPage(); y = M; } pdfUpi(doc, C, d, M, y, 80); y += 90; }
     if (d.irn || (d.ewb && d.ewb.no)) { doc.setFontSize(8); var gl = (d.irn ? 'IRN: ' + d.irn + (d.ack ? '   Ack No: ' + d.ack : '') + (d.ackDt ? '   Ack Date: ' + dmy(d.ackDt) : '') : '') + (d.ewb && d.ewb.no ? (d.irn ? '\n' : '') + 'E-way bill: ' + d.ewb.no : ''); var gx = doc.splitTextToSize(gl, W - 2 * M); doc.text(gx, M, y); y += gx.length * 10 + 6; }
-    if (d.notes) { doc.setFontSize(8.5); var nl = doc.splitTextToSize('Notes: ' + pdfTxt(d.notes), W - 2 * M); doc.text(nl, M, y); y += nl.length * 11 + 6; }
+    if (pfOf(C).footer) d = Object.assign({}, d, { notes: (d.notes ? d.notes + '\n' : '') + pfOf(C).footer }); if (d.notes) { doc.setFontSize(8.5); var nl = doc.splitTextToSize('Notes: ' + pdfTxt(d.notes), W - 2 * M); doc.text(nl, M, y); y += nl.length * 11 + 6; }
   }
-  doc.setFontSize(9); doc.setTextColor(110); doc.text('For ' + pdfTxt(C.name), W - M, H - 62, { align: 'right' }); doc.text('Authorised signatory', W - M, H - 36, { align: 'right' });
-  doc.setFontSize(8); doc.text('This is a computer generated document.', M, H - 24);
+  doc.setFontSize(9); doc.setTextColor(110); doc.text('For ' + pdfTxt(C.name), W - M, H - 62, { align: 'right' }); doc.text(pdfTxt(pfOf(C).sig || 'Authorised signatory'), W - M, H - 36, { align: 'right' });
+  doc.setFontSize(8); doc.text('Computer generated document. Printed ' + pdfTxt(nowStamp()), M, H - 24);
   });
   return doc.output('arraybuffer');
 }
@@ -5777,9 +6093,9 @@ function receiptH(p) {
   return '<div class="mh"><h2>' + (isR ? 'Receipt ' : 'Payment voucher ') + esc(p.no) + '</h2>' + btn('closeModal', 'Close', {}, 'sm line') + '</div><div class="pre">' +
     '<div class="hd"><div><b style="font-size:17px">' + esc(C.name) + '</b><div style="font-size:12px;opacity:.8">' + esc(C.address) + '</div></div><div style="text-align:right"><b>' + (isR ? 'RECEIPT' : 'PAYMENT VOUCHER') + '</b><div style="font-size:12px;opacity:.8">' + esc(p.no) + ' · ' + dmy(p.date) + '</div></div></div>' +
     '<div class="fg"><div><div class="note">' + (isR ? 'Received from' : 'Paid to') + '</div><b>' + esc(pr.name || '-') + '</b></div><div><div class="note">Mode</div><b>' + esc(p.mode) + '</b></div><div><div class="note">Against</div><b>' + (inv ? esc(inv.no) : 'On account') + '</b></div></div>' +
-    '<div class="tot"><div class="g"><span>Amount</span><span class="num">' + money(p.amount) + '</span></div><div class="note">' + esc(amtWords(p.amount)) + '</div></div>' +
+    '<div class="tot">' + (p.disc ? '<div><span>Discount given</span><span class="num">' + money(p.disc) + '</span></div>' : '') + '<div class="g"><span>Amount</span><span class="num">' + money(p.amount) + '</span></div><div class="note">' + esc(amtWords(p.amount)) + '</div></div>' +
     (p.note ? '<div class="note">' + esc(p.note) + '</div>' : '') +
-    '<div class="note">' + (p.by ? (isR ? 'Received' : 'Entered') + ' by <b>' + esc(p.by) + '</b>' : '') + (p.editedBy ? ' · Edited by <b>' + esc(p.editedBy) + '</b>' : '') + (p.cancelled ? ' · Cancelled' : '') + '</div>' +
+    '<div class="note">' + (p.by ? (isR ? 'Received' : 'Entered') + ' by <b>' + esc(p.by) + '</b>' + (p.at ? ' on ' + tmStr(p.at) : '') : '') + (p.editedBy ? ' · Edited by <b>' + esc(p.editedBy) + '</b>' : '') + (p.cancelled ? ' · Cancelled' : '') + '</div>' +
     '<div class="row">' + btn('payPdf', 'Download PDF', { id: p.id }, 'pri') + (isR ? btn('waPay', 'Send on WhatsApp (PDF)', { id: p.id }, '') : '') + btn('copyPay', 'Copy text', { id: p.id }, 'line') + (!p.cancelled && canAdmin(isR ? 'sales' : 'purchases') && canWrite(isR ? 'sales' : 'purchases', p.type) ? btn('editPay', 'Edit', { id: p.id }, 'line') + btn('cancelPay', 'Cancel', { id: p.id }, 'warn') : '') + '</div></div>';
 }
 async function payPdf(p) {
@@ -5795,7 +6111,7 @@ async function payPdf(p) {
   y += 6; doc.setFillColor(21, 21, 21); doc.rect(M, y, W - 2 * M, 30, 'F'); doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.text('AMOUNT', M + 10, y + 20); doc.text(inr(p.amount), W - M - 10, y + 20, { align: 'right' });
   doc.setTextColor(21); doc.setFont('helvetica', 'normal'); doc.setFontSize(9); y += 50; doc.text(doc.splitTextToSize(amtWords(p.amount), W - 2 * M), M, y);
   if (p.note) { y += 28; doc.setTextColor(110); doc.text(doc.splitTextToSize('Note: ' + pdfTxt(p.note), W - 2 * M), M, y); }
-  doc.setTextColor(110); doc.text('Authorised signatory', W - M, H - 40, { align: 'right' }); doc.setFontSize(8); doc.text('This is a computer generated document.', M, H - 24);
+  doc.setTextColor(110); doc.text(pdfTxt(pfOf(C).sig || 'Authorised signatory'), W - M, H - 40, { align: 'right' }); doc.setFontSize(8); doc.text('Computer generated document. Printed ' + pdfTxt(nowStamp()), M, H - 24);
   return doc.output('arraybuffer');
 }
 function payModel(p) {
@@ -5831,9 +6147,9 @@ function companyPickH() {
 }
 
 /* ---------- shell ---------- */
-var NAV = [['dashboard', 'Home'], ['quick', 'New Bill'], ['sales', 'Sales'], ['purchases', 'Purchases'], ['parties', 'Customers and Suppliers'], ['inventory', 'Items and Stock'], ['accounting', 'Money'], ['gst', 'Reports and GST'], ['crm', 'CRM and Insights'], ['settings', 'Settings']];
-var NAV_GAP = { parties: 1, gst: 1 };
-var V = { quick: vQuick, dashboard: vDashboard, sales: vSales, purchases: vPurchases, inventory: vInventory, accounting: vAccounting, gst: vGst, crm: vCrm, parties: vParties, settings: vSettings };
+var NAV = [['dashboard', 'Home'], ['quick', 'New Bill'], ['sales', 'Sales'], ['purchases', 'Purchases'], ['parties', 'Customers and Suppliers'], ['inventory', 'Items and Stock'], ['accounting', 'Money'], ['gst', 'Reports and GST'], ['crm', 'CRM and Insights'], ['settings', 'Settings'], ['bin', 'Recycle Bin']];
+var NAV_GAP = { parties: 1, gst: 1, bin: 1 };
+var V = { quick: vQuick, dashboard: vDashboard, sales: vSales, purchases: vPurchases, inventory: vInventory, accounting: vAccounting, gst: vGst, crm: vCrm, parties: vParties, settings: vSettings, bin: vBin };
 function shellH() {
   var C = cur(), u = user();
   var nav = NAV.filter(function (n) { return canView(n[0]); });
@@ -5888,6 +6204,11 @@ A.reset = function (fd) {
   if (!u || !checkRecovery(u, fd.get('code'))) { S.fails = (S.fails || 0) + 1; if (S.fails >= 5) { S.lockUntil = Date.now() + 30000; S.fails = 0; } S.err = 'Email and recovery code do not match.'; render(); return; }
   if (pw.length < 6) { S.err = 'Password must be 6 or more characters.'; render(); return; }
   setPass(u, pw); S.err = ''; S.mode = 'login'; save(); render(); toast('Password changed. Sign in with the new password.');
+};
+A.savePrefs = function (fd) {
+  if (!ownerOnly()) return; var C = cur();
+  C.pf = { dueDays: Math.min(365, Math.max(0, parseInt(fd.get('dueDays'), 10) || 0)), validDays: Math.min(365, Math.max(1, parseInt(fd.get('validDays'), 10) || 14)), idle: parseInt(fd.get('idle'), 10) || 0, sig: String(fd.get('sig') || '').trim().slice(0, 40) || 'Authorised signatory', terms: String(fd.get('terms') || '').trim().slice(0, 400), footer: String(fd.get('footer') || '').trim().slice(0, 120), stamp: !!fd.get('stamp'), lowHome: !!fd.get('lowHome') };
+  log('Preferences saved'); toast('Preferences saved.'); afterChange();
 };
 A.logout = function () { DB.session = null; S.mode = 'login'; S.draft = null; afterChange(); };
 A.switchCo = function () { DB.session.companyId = null; S.draft = null; afterChange(); };
@@ -5990,12 +6311,13 @@ A.newPay = function (d) {
     field(type === 'receipt' ? 'Customer' : 'Supplier', '<select name="party" data-chg="payParty" required>' + opts(ps, pid, function (p) { return p.id; }, function (p) { return p.name; }) + '</select>') +
     field('Against invoice', '<select name="ref" data-chg="payInv">' + payInvOptions(type, pid, ref ? ref.id : '') + '</select>') +
     field('Amount', '<input name="amt" type="number" min="0.01" step="any" required value="' + (ref ? rs(outstanding(C, ref)) : '') + '">') +
+    field('Discount given (Rs, optional)', '<input name="disc" type="number" min="0" step="any" placeholder="0">') +
     field('Mode', '<select name="mode"><option>Cash</option><option>UPI</option><option>Bank</option><option>Card</option><option>Cheque</option></select>') + field('Date', '<input name="date" type="date" value="' + today() + '" required>') + field('Note', '<input name="note">') +
     '</div><div class="note" style="margin:8px 0">Partial payment keeps the balance outstanding. Full payment marks the invoice paid.</div><button class="btn pri" type="submit">Save</button></form>');
 };
 A.savePay = function (fd) {
   var C = cur(), type = fd.get('type');
-  var err = addPayment(C, { type: type, partyId: fd.get('party'), amount: P(fd.get('amt')), mode: fd.get('mode'), date: fd.get('date'), refId: fd.get('ref'), note: fd.get('note') });
+  var err = addPayment(C, { type: type, partyId: fd.get('party'), amount: P(fd.get('amt')), disc: P(fd.get('disc')), mode: fd.get('mode'), date: fd.get('date'), refId: fd.get('ref'), note: fd.get('note') });
   if (err) { toast(err, true); return; }
   closeModal(); afterChange(); modal(receiptH(C.d.payments[C.d.payments.length - 1])); toast((type === 'receipt' ? 'Receipt' : 'Payment') + ' saved.');
 };
@@ -6125,10 +6447,11 @@ A.saveCompany = function (fd) {
   var upv = String(fd.get('bupi') || '').trim(); if (upv && !upiOk(upv)) { toast('UPI ID looks wrong. Example: shopname@okaxis', true); return; }
   var ge = gstinErr(g, fd.get('state')); if (ge) { toast(ge, true); return; }
   var cpin = String(fd.get('pin') || '').trim(); if (cpin && !pinOk(cpin)) { toast('PIN code has 6 digits.', true); return; }
+  var oldBiz = C.bizType;
   Object.assign(C, { city: String(fd.get('city') || '').trim(), pin: cpin, einv: !!fd.get('einv'), name: cn, gstin: g, state: fd.get('state'), bizType: fd.get('biz'), mode: fd.get('mode'), phone: fd.get('phone'), email: fd.get('email'), address: fd.get('address') });
   C.bank = { name: fd.get('bname'), acc: fd.get('bacc'), ifsc: fd.get('bifsc'), upi: String(fd.get('bupi') || '').trim() };
   C.copyNames = [0, 1, 2].map(function (i) { return String(fd.get('cp' + i) || '').trim().slice(0, 40); }); C.dailyPopup = !!fd.get('popup');
-  log('Company settings saved'); toast('Settings saved.'); afterChange();
+  log('Company settings saved'); toast(oldBiz !== C.bizType ? 'Business type changed. ' + bizNote(C.bizType) : 'Settings saved.'); afterChange();
 };
 A.saveSeries = function (fd) {
   if (!ownerOnly()) return;
@@ -6279,7 +6602,7 @@ A.qbSave = function () {
   var C = cur(), s = qbState();
   if (!s.cart.length) { toast('Add at least one item to the bill.', true); return; }
   var walk = !s.partyId, pid = s.partyId || (C.d.parties.find(function (x) { return x.type === 'customer' && x.name === 'Walk-in Customer'; }) || {}).id || '';
-  var d = newDraft('invoice', { partyId: pid || 'tmp', items: JSON.parse(JSON.stringify(s.cart)), due: today() });
+  var d = newDraft('invoice', { partyId: pid || 'tmp', items: JSON.parse(JSON.stringify(s.cart)), due: today(), bdt: s.bdt, bdv: s.bdv });
   calc(C, d);
   var err = validateDoc(C, d); if (err) { toast(err, true); return; }
   var sh = shortages(C, d); if (sh.length) { toast('Not enough stock: ' + sh.map(function (x) { return x.name + ' (have ' + qtyF(x.have) + ')'; }).join(', ') + '.', true); return; }
@@ -6328,10 +6651,12 @@ document.addEventListener('input', function (e) {
   if (t.dataset && t.dataset.qbf) {
     var s = qbState();
     if (t.dataset.qbf === 'paid') { s.paid = t.value === '' ? null : t.value; return; }
+    if (t.dataset.qbf === 'bdt' || t.dataset.qbf === 'bdv') { s[t.dataset.qbf] = t.value; qbRefresh(); return; }
     var ci = s.cart[+t.dataset.qi]; if (!ci) return;
     if (t.dataset.qbf === 'rate') ci.rate = P(t.value); else ci.qty = parseFloat(t.value) || 0;
     qbRefresh(); return;
   }
+  if (t.id === 'hq') { S.hq = t.value; var hr = $('#hqres'); if (hr) hr.innerHTML = hmSearchRes(cur(), S.hq); return; }
   if (t.id === 'q') { S.q = t.value; S.lim = {}; var l = $('#list'); if (l && S.listFn) l.innerHTML = S.listFn(); return; }
   var f = t.dataset && t.dataset.f; if (!f || !S.draft) return;
   if (t.dataset.i !== undefined) {
@@ -6341,12 +6666,13 @@ document.addEventListener('input', function (e) {
     else if (f === 'qty' || f === 'disc' || f === 'gst') it[f] = parseFloat(t.value) || 0;
     else it[f] = t.value;
     if (f === 'rate' || f === 'qty' || f === 'disc' || f === 'gst') refreshTotals();
-  } else { S.draft[f] = t.value; if (f === 'partyId') refreshTotals(); }
+  } else { S.draft[f] = t.value; if (f === 'partyId' || f === 'bdt' || f === 'bdv') refreshTotals(); }
 });
 document.addEventListener('change', function (e) {
   var t = e.target, C = cur();
   if (t.name === 'svc' && t.form) { var tk = t.form.elements.tracked; if (tk) { tk.checked = !t.checked; if (t.checked) { ['batch', 'serial'].forEach(function (n) { if (t.form.elements[n]) t.form.elements[n].checked = false; }); } } return; }
   if (t.dataset.range) { rng()[t.dataset.range] = t.value; render(); return; }
+  if (t.dataset.f === 'name' && S.draft && t.dataset.i !== undefined) { var ni = +t.dataset.i, nit = S.draft.items[ni], nm = String(t.value || '').trim().toLowerCase(), np = nm && C.d.products.find(function (p) { return p.name.trim().toLowerCase() === nm; }); if (nit && np && !nit.pid) { applyProduct(C, S.draft, ni, np.id); render(); return; } }
   if (t.dataset.f === 'pid' && S.draft) { applyProduct(C, S.draft, +t.dataset.i, t.value); render(); return; }
   var c = t.dataset.chg; if (!c) return;
   if (c === 'dbDate') { if (t.value) { S.dbDate = t.value; render(); } return; }
@@ -6387,7 +6713,7 @@ bindImport(A);
 bindRemind(A);
 bindPrice(A);
 bindRecur(A);
-bindSerial(A); bindTds(A); bindBank(A); bindR2b(A);
+bindSerial(A); bindTds(A); bindBank(A); bindR2b(A); bindMore(A); bindMore2(A); bindBackup(A);
 function boot() {
   DB = load();
   if (!DB) DB = seedDB();
@@ -6407,7 +6733,7 @@ function boot() {
     document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flushIdb(); });
   } catch (e) { }
   render();
-  licStart();
+  licStart(); autoBackupStart();
 }
 initStore(boot);
 })();

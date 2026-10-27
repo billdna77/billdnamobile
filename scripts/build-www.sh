@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 python3 - <<'PY'
 base=open('mobile/app.base.js',encoding='utf-8').read()
-mob=open('mobile/mobile.js',encoding='utf-8').read()+'\n'+open('mobile/billimg.js',encoding='utf-8').read()
+mob=open('mobile/mobile.js',encoding='utf-8').read()+'\n'+open('mobile/billimg.js',encoding='utf-8').read()+'\n'+open('mobile/native.js',encoding='utf-8').read()
 marker='initStore(boot);\n})();'
 assert base.rstrip().endswith('initStore(boot);\n})();'), 'unexpected app.js tail'
 i=base.rstrip().rfind(marker)

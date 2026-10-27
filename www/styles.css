@@ -268,3 +268,7 @@ tr.clk{cursor:pointer}
 .chip.amb{background:#FFF1DC;border-color:#F4D6A2;color:#9A5A00}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .chip.ok{background:#12301F;border-color:#1f5a38;color:#7bd7a1}:root:not([data-theme="light"]) .chip.warn{background:#3a1a13;border-color:#6b2f20;color:#ff9d7a}:root:not([data-theme="light"]) .chip.amb{background:#3a2a0d;border-color:#6b4d16;color:#f4c36b}}
 .acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap}
+.hm-clock{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.hm-clock b{font:600 48px/1 'IBM Plex Mono',ui-monospace,monospace;letter-spacing:1px;color:#fff;font-variant-numeric:tabular-nums}
+.hm-clock span{font-size:16px;opacity:.85;color:#fff}
+@media print{body[data-stamp]::after{content:attr(data-stamp);display:block;font:10px Arial,sans-serif;color:#555;margin-top:8px;text-align:right}}

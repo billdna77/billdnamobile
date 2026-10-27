@@ -85,6 +85,7 @@ if (MOB) (function () {
         ['Items', 'tag', 'mOpen', { v: 'inventory', t: 'products' }],
         ['Stock In / Out', 'layers', 'mOpen', { v: 'inventory', t: 'adjust' }, 'Adjust, transfer, opening'],
         ['Warehouses', 'home2', 'mOpen', { v: 'inventory', t: 'warehouses' }],
+        ['Godown Transfer', 'swap', 'mOpen', { v: 'inventory', t: 'transfers' }],
         ['Stock Ledger', 'book', 'mOpen', { v: 'inventory', t: 'ledger' }],
         ['Stock Value', 'scale', 'mOpen', { v: 'inventory', t: 'valuation' }]]
         .concat(C.d.products.some(function (p) { return p.batch; }) ? [['Batches & Expiry', 'clock', 'mOpen', { v: 'inventory', t: 'batches' }]] : [])
@@ -127,6 +128,7 @@ if (MOB) (function () {
       { id: 'settings', name: 'Settings', icon: 'gear', v: 'settings', items: [
         ['Company & Tax', 'home2', 'mOpen', { v: 'settings', t: 'company' }],
         ['Number Series', 'hash', 'mOpen', { v: 'settings', t: 'series' }],
+        ['Preferences', 'gear', 'mOpen', { v: 'settings', t: 'prefs' }],
         ['Users & Roles', 'shield', 'mOpen', { v: 'settings', t: 'users' }],
         ['Backup', 'cloud', 'mOpen', { v: 'settings', t: 'backup' }],
         ['Recycle Bin', 'trash', 'mOpen', { v: 'settings', t: 'bin' }],
@@ -153,6 +155,8 @@ if (MOB) (function () {
   table = function (head, rows, empty, foot, ids) {
     if (!rows.length) return '<div class="empty">' + esc(empty || 'Nothing here yet.') + '</div>';
     var lab = function (i) { return head[i] && head[i][0] ? ' data-label="' + esc(head[i][0]) + '"' : ''; };
+    if (head.length <= 2) return '<div class="tw"><table class="mt2"><thead><tr>' + head.map(function (h) { return '<th class="' + (h[1] || '') + '">' + esc(h[0]) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function (r, ri) { var a = ids && ids[ri]; return '<tr' + (a ? ' class="clk" tabindex="0" data-act="' + a[0] + '" data-id="' + esc(a[1]) + '"' : '') + '>' + r.map(function (c, i) { return '<td class="' + (head[i][1] || '') + '">' + c + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody>' +
+      (foot ? '<tfoot><tr>' + foot.map(function (c, i) { return '<td class="' + (head[i][1] || '') + '">' + c + '</td>'; }).join('') + '</tr></tfoot>' : '') + '</table></div>';
     return '<div class="tw"><table class="mt"><thead><tr>' + head.map(function (h) { return '<th class="' + (h[1] || '') + '">' + esc(h[0]) + '</th>'; }).join('') + '</tr></thead><tbody>' +
       rows.map(function (r, ri) { var a = ids && ids[ri]; return '<tr' + (a ? ' class="clk" tabindex="0" data-act="' + a[0] + '" data-id="' + esc(a[1]) + '"' : '') + '>' + r.map(function (c, i) { return '<td class="' + (head[i][1] || '') + '"' + lab(i) + '>' + c + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody>' +
       (foot ? '<tfoot><tr>' + foot.map(function (c, i) { return '<td class="' + (head[i][1] || '') + '"' + lab(i) + '>' + c + '</td>'; }).join('') + '</tr></tfoot>' : '') + '</table></div>';
@@ -282,6 +286,7 @@ if (MOB) (function () {
     if (over.length) al += '<button type="button" class="m-alert" data-act="goDoc" data-t="invoice" data-f="overdue">' + ic('alert') + '<span><b>' + over.length + ' bill(s) overdue</b>' + money(sumBy(over, function (x) { return outstanding(C, x); })) + ' to collect</span>' + ic('chev') + '</button>';
     if (low.length) al += '<button type="button" class="m-alert" data-act="mOpen" data-v="gst" data-t="lowstock">' + ic('box') + '<span><b>' + low.length + ' item(s) low on stock</b>' + esc(nameList(low.map(function (p) { return p.name; }), 2)) + '</span>' + ic('chev') + '</button>';
     h += homeActions(C, true) + al;
+    if (typeof hmSearchH === 'function') h += hmSearchH(C);
     var secs = featureMap().map(function (g) { return [g.name, g.icon, 'mOpen', { v: g.v, t: g.items[0][3].t || '' }]; }).filter(function (x) { return x[0] !== 'Sales' || true; });
     secs.forEach(function (x) { if (x[0] === 'Sales') x[3] = { v: 'sales', t: 'invoice' }; });
     h += '<section class="card m-card"><div class="m-gh"><h2>Your business</h2>' + btn('mMenu', 'See all', {}, 'sm line') + '</div><div class="m-qgrid">' + secs.map(function (x) { return tile(x, 'sec'); }).join('') + '</div></section>';
